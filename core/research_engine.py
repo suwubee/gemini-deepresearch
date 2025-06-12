@@ -41,6 +41,9 @@ class ResearchEngine:
         self.progress_callback: Optional[Callable] = None
         self.step_callback: Optional[Callable] = None
         self.error_callback: Optional[Callable] = None
+        
+        # 停止控制标记
+        self._stop_research = False
     
     def set_callbacks(self, progress_callback=None, step_callback=None, error_callback=None):
         """设置回调函数"""
@@ -63,6 +66,15 @@ class ResearchEngine:
         """设置错误回调函数"""
         self.error_callback = callback
     
+    def stop_research(self):
+        """停止当前研究"""
+        self._stop_research = True
+        self._notify_step("🛑 收到停止指令，正在终止研究...")
+    
+    def reset_stop_flag(self):
+        """重置停止标记"""
+        self._stop_research = False
+    
     async def research(self, user_query: str, 
                       max_search_rounds: int = 3,
                       effort_level: str = "medium") -> Dict[str, Any]:
@@ -78,12 +90,23 @@ class ResearchEngine:
             研究结果字典
         """
         try:
+            # 重置停止标记
+            self._stop_research = False
+            
             # 1. 开始新任务
             task_id = self.state_manager.start_new_task(user_query)
             self._notify_progress("开始分析任务...", 0)
             
+            # 检查停止信号
+            if self._stop_research:
+                return {"success": False, "error": "研究被用户停止"}
+            
             # 2. 分析任务并构建工作流
             workflow = await self._analyze_and_build_workflow(user_query, effort_level)
+            
+            # 检查停止信号
+            if self._stop_research:
+                return {"success": False, "error": "研究被用户停止"}
             
             # 3. 替换工作流步骤函数为实际实现，并调整查询数量
             self._inject_research_functions(workflow, max_search_rounds, effort_level)
@@ -91,6 +114,10 @@ class ResearchEngine:
             # 4. 执行工作流
             self.state_manager.update_task_progress(status=TaskStatus.ANALYZING)
             result = await self._execute_workflow(workflow, user_query, max_search_rounds)
+            
+            # 检查停止信号
+            if self._stop_research:
+                return {"success": False, "error": "研究被用户停止"}
             
             # 5. 完成任务
             self.state_manager.complete_task(result)
@@ -300,7 +327,18 @@ class ResearchEngine:
         
         self._notify_progress(f"完成初始搜索分析", 50)
         
-        while search_round < max_search_rounds and not analysis.get("is_sufficient", False):
+        # 添加外部停止检查标记
+        self._stop_research = False
+        
+        while (search_round < max_search_rounds and 
+               not analysis.get("is_sufficient", False) and 
+               not self._stop_research):
+            
+            # 检查外部停止信号
+            if self._stop_research:
+                self._notify_step("🛑 收到停止信号，终止搜索循环")
+                break
+            
             self._notify_step(f"信息不充足，开始第{search_round+1}轮补充搜索...")
             
             # 第4步：补充搜索
