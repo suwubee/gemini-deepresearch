@@ -15,6 +15,7 @@ from typing import Dict, Any
 # 导入核心组件
 from core.research_engine import ResearchEngine
 from core.state_manager import TaskStatus
+from utils.debug_logger import enable_debug, disable_debug, get_debug_logger
 
 # 页面配置
 st.set_page_config(
@@ -86,7 +87,8 @@ def initialize_session_state():
         "research_complete": False,
         "research_error": None,
         "research_started": False,  # 添加执行标记
-        "just_completed": False     # 刚刚完成标记
+        "just_completed": False,    # 刚刚完成标记
+        "debug_enabled": False      # debug模式开关
     }
     
     for key, default_value in defaults.items():
@@ -159,6 +161,44 @@ def setup_api_key():
                     st.text(f"📊 分析: {model_config.task_analysis_model}")
                     st.text(f"🤔 反思: {model_config.reflection_model}")
                     st.text(f"📝 答案: {model_config.answer_model}")
+            
+            # Debug开关
+            st.sidebar.divider()
+            st.sidebar.subheader("🐛 Debug模式")
+            
+            debug_enabled = st.sidebar.checkbox(
+                "启用调试模式",
+                value=st.session_state.debug_enabled,
+                help="启用后将记录所有API请求和响应到JSON文件，用于调试"
+            )
+            
+            if debug_enabled != st.session_state.debug_enabled:
+                st.session_state.debug_enabled = debug_enabled
+                if debug_enabled:
+                    enable_debug("debug_logs")
+                    st.sidebar.success("🐛 Debug模式已启用")
+                    st.sidebar.info("📁 日志将保存到 debug_logs/ 目录")
+                else:
+                    disable_debug()
+                    st.sidebar.info("🐛 Debug模式已禁用")
+            
+            if debug_enabled:
+                debug_logger = get_debug_logger()
+                if debug_logger.current_session:
+                    st.sidebar.text(f"📝 会话ID: {debug_logger.current_session}")
+                    
+                    # 显示会话摘要
+                    summary = debug_logger.get_session_summary()
+                    if summary:
+                        with st.sidebar.expander("📊 Debug统计", expanded=False):
+                            st.metric("API请求", summary.get("total_api_requests", 0))
+                            st.metric("搜索次数", summary.get("total_searches", 0))
+                            st.metric("错误数量", summary.get("total_errors", 0))
+                    
+                    # 立即保存按钮
+                    if st.sidebar.button("💾 保存Debug日志"):
+                        debug_logger.save_now()
+                        st.sidebar.success("✅ Debug日志已保存")
         else:
             st.session_state.api_key_validated = False
             st.sidebar.error("❌ API密钥验证失败")

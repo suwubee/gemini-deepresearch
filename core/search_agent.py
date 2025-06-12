@@ -4,6 +4,7 @@
 """
 
 import time
+import traceback
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 
@@ -20,6 +21,7 @@ from utils.helpers import (
     extract_urls,
     clean_text
 )
+from utils.debug_logger import get_debug_logger
 
 
 class SearchAgent:
@@ -30,6 +32,7 @@ class SearchAgent:
         self.model_name = model_name
         self.client = None
         self.search_history = []
+        self.debug_logger = get_debug_logger()
         
         # 初始化客户端
         if Client:
@@ -55,6 +58,21 @@ class SearchAgent:
         
         try:
             search_start_time = datetime.now()
+            request_id = f"search_{int(time.time() * 1000)}"
+            
+            # Debug: 记录API请求
+            config_dict = {
+                "temperature": 0.1,
+                "max_output_tokens": 8192,
+                "use_search": use_search
+            }
+            self.debug_logger.log_api_request(
+                request_type="search_with_grounding",
+                model=self.model_name,
+                prompt=query,
+                config=config_dict,
+                request_id=request_id
+            )
             
             # 添加延迟避免速率限制
             if hasattr(self, '_last_request_time'):
@@ -83,8 +101,27 @@ class SearchAgent:
             
             search_duration = (datetime.now() - search_start_time).total_seconds()
             
+            # Debug: 记录API响应
+            response_text = response.text if response and hasattr(response, 'text') else ""
+            metadata = {}
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+                    metadata["has_grounding"] = True
+                    if hasattr(candidate.grounding_metadata, 'web_search_queries'):
+                        metadata["search_queries"] = list(candidate.grounding_metadata.web_search_queries)
+            
+            self.debug_logger.log_api_response(
+                request_id=request_id,
+                response_text=response_text,
+                metadata=metadata
+            )
+            
             # 解析响应
             result = self._parse_search_response(response, query, search_duration)
+            
+            # Debug: 记录搜索结果
+            self.debug_logger.log_search_result(query, result, "grounding")
             
             # 记录搜索历史
             self.search_history.append({
@@ -97,7 +134,7 @@ class SearchAgent:
             return result
             
         except Exception as e:
-            return {
+            error_result = {
                 "success": False,
                 "error": str(e),
                 "query": query,
@@ -108,6 +145,16 @@ class SearchAgent:
                 "search_queries": [],
                 "duration": 0
             }
+            
+            # Debug: 记录错误
+            self.debug_logger.log_error(
+                error_type="SearchError",
+                error_message=str(e),
+                context={"query": query, "model": self.model_name},
+                stacktrace=traceback.format_exc()
+            )
+            
+            return error_result
     
     def _parse_search_response(self, response, original_query: str, duration: float) -> Dict[str, Any]:
         """解析搜索响应"""

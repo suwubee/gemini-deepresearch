@@ -5,6 +5,7 @@
 
 import asyncio
 import time
+import traceback
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime
 
@@ -14,6 +15,7 @@ from .state_manager import StateManager, TaskStatus
 from .model_config import ModelConfiguration, get_model_config, set_user_model
 from utils.prompts import PromptTemplates
 from utils.helpers import extract_json_from_text
+from utils.debug_logger import get_debug_logger
 
 
 class ResearchEngine:
@@ -36,6 +38,7 @@ class ResearchEngine:
         self.workflow_builder = DynamicWorkflowBuilder(api_key, self.model_config.task_analysis_model)
         self.search_agent = SearchAgent(api_key, self.model_config.search_model)
         self.state_manager = StateManager()
+        self.debug_logger = get_debug_logger()
         
         # 进度回调函数
         self.progress_callback: Optional[Callable] = None
@@ -93,6 +96,17 @@ class ResearchEngine:
             # 重置停止标记
             self._stop_research = False
             
+            # Debug: 记录研究开始
+            self.debug_logger.log_workflow_step(
+                step_name="research_start",
+                step_status="running",
+                input_data={
+                    "user_query": user_query,
+                    "max_search_rounds": max_search_rounds,
+                    "effort_level": effort_level
+                }
+            )
+            
             # 1. 开始新任务
             task_id = self.state_manager.start_new_task(user_query)
             self._notify_progress("开始分析任务...", 0)
@@ -123,7 +137,7 @@ class ResearchEngine:
             self.state_manager.complete_task(result)
             self._notify_progress("研究完成！", 100)
             
-            return {
+            final_result = {
                 "success": True,
                 "task_id": task_id,
                 "user_query": user_query,
@@ -136,10 +150,47 @@ class ResearchEngine:
                 "statistics": self.state_manager.get_session_statistics()
             }
             
+            # Debug: 记录研究完成
+            self.debug_logger.log_research_result(
+                user_query=user_query,
+                final_result=final_result,
+                metadata={
+                    "task_id": task_id,
+                    "effort_level": effort_level,
+                    "max_search_rounds": max_search_rounds
+                }
+            )
+            
+            self.debug_logger.log_workflow_step(
+                step_name="research_complete",
+                step_status="completed",
+                output_data=final_result
+            )
+            
+            return final_result
+            
         except Exception as e:
             # 处理错误
             error_msg = f"研究过程中发生错误: {str(e)}"
             self.state_manager.fail_task(error_msg)
+            
+            # Debug: 记录错误
+            self.debug_logger.log_error(
+                error_type="ResearchError",
+                error_message=error_msg,
+                context={
+                    "user_query": user_query,
+                    "max_search_rounds": max_search_rounds,
+                    "effort_level": effort_level
+                },
+                stacktrace=traceback.format_exc()
+            )
+            
+            self.debug_logger.log_workflow_step(
+                step_name="research_failed",
+                step_status="failed",
+                output_data={"error": error_msg}
+            )
             
             if self.error_callback:
                 self.error_callback(error_msg)
