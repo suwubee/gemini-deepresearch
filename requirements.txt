@@ -1,0 +1,25 @@
+# Core Dependencies  
+streamlit>=1.28.0
+google-genai
+
+# Async Support
+asyncio
+aiohttp>=3.8.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# JSON Processing
+orjson>=3.9.0
+
+# Utilities
+python-dateutil>=2.8.0
+regex>=2023.0.0
+
+# Optional: For enhanced UI
+plotly>=5.15.0
+streamlit-option-menu>=0.3.6
+
+# Development
+python-dotenv>=1.0.0 
