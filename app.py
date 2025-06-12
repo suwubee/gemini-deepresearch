@@ -518,6 +518,9 @@ def research_interface():
             st.session_state.research_complete = False
             st.session_state.research_error = None
             
+            # 重置停止标记
+            st.session_state.stop_research = False
+            
             # 添加执行标记，避免重复执行
             st.session_state.research_started = True
             
@@ -540,15 +543,7 @@ def research_interface():
             st.session_state.progress_percentage = 0
             st.session_state.research_started = False
             
-            # 清理线程相关状态
-            if "research_thread" in st.session_state:
-                del st.session_state.research_thread
-            if "research_thread_done" in st.session_state:
-                del st.session_state.research_thread_done
-            if "research_results_temp" in st.session_state:
-                del st.session_state.research_results_temp
-            if "research_error_temp" in st.session_state:
-                del st.session_state.research_error_temp
+            # 清理研究相关状态
             if "current_research_id" in st.session_state:
                 del st.session_state.current_research_id
             
@@ -584,89 +579,82 @@ def research_interface():
         with step_container:
             messages_container = st.empty()
         
-        # 使用非阻塞式的研究执行
-        if "research_thread" not in st.session_state:
-            import threading
+        # 直接同步执行研究
+        try:
+            # 添加一个状态消息
+            st.session_state.progress_messages.append("⚡ 正在初始化研究引擎...")
             
-            # 添加停止标记
-            st.session_state.stop_research = False
+            # 更新进度显示回调
+            def progress_callback(message, percentage):
+                # 检查停止标记
+                if st.session_state.get("stop_research", False):
+                    # 通知研究引擎停止
+                    if st.session_state.research_engine:
+                        st.session_state.research_engine.stop_research()
+                    raise Exception("用户停止了研究")
+                    
+                msg = f"[{percentage:.1f}%] {message}"
+                st.session_state.progress_messages.append(msg)
+                st.session_state.progress_percentage = percentage
+                print(msg)
+                
+                # 实时更新进度条
+                progress_bar.progress(percentage / 100)
+                current_step_text.info(f"📝 {message}")
+                
+                # 更新消息列表
+                with messages_container:
+                    with st.expander("📝 详细进度", expanded=True):
+                        for i, msg in enumerate(st.session_state.progress_messages[-10:], 1):
+                            st.text(f"{i}. {msg}")
             
-            def research_worker():
-                try:
-                    # 添加一个状态消息
-                    st.session_state.progress_messages.append("⚡ 正在初始化研究引擎...")
+            def step_callback(message):
+                # 检查停止标记
+                if st.session_state.get("stop_research", False):
+                    # 通知研究引擎停止
+                    if st.session_state.research_engine:
+                        st.session_state.research_engine.stop_research()
+                    raise Exception("用户停止了研究")
                     
-                    # 执行研究
-                    research_results = run_research_sync(user_query, max_search_rounds, effort_level)
-                    
-                    # 保存结果
-                    st.session_state.research_results_temp = research_results
-                    
-                except Exception as e:
-                    st.session_state.research_error_temp = str(e)
-                finally:
-                    # 标记线程完成
-                    st.session_state.research_thread_done = True
+                msg = f"⚡ {message}"
+                st.session_state.progress_messages.append(msg)
+                st.session_state.current_step = message
+                print(msg)
+                
+                current_step_text.info(f"🔄 {message}")
             
-            # 启动研究线程
-            research_thread = threading.Thread(target=research_worker)
-            research_thread.daemon = True
-            research_thread.start()
-            st.session_state.research_thread = research_thread
-            st.session_state.research_thread_done = False
-        
-        # 检查研究线程状态
-        if st.session_state.get("research_thread_done", False):
+            # 直接调用研究函数
+            research_results = run_research_sync(user_query, max_search_rounds, effort_level, 
+                                               progress_callback, step_callback)
+            
             # 研究完成
             st.session_state.is_researching = False
             st.session_state.research_complete = True
-            st.session_state.research_started = False
+            st.session_state.research_started = False  # 重置执行标记
             
-            # 清理线程相关状态
-            if "research_thread" in st.session_state:
-                del st.session_state.research_thread
-            del st.session_state.research_thread_done
-            
-            # 处理结果
-            if "research_results_temp" in st.session_state:
-                research_results = st.session_state.research_results_temp
-                del st.session_state.research_results_temp
+            if research_results.get("success"):
+                st.session_state.current_task = research_results
+                st.session_state.research_results.append(research_results)
+                progress_bar.progress(1.0)
+                current_step_text.success("🎉 研究完成！")
+                st.rerun()
+            else:
+                st.session_state.research_error = research_results.get('error', '未知错误')
+                current_step_text.error(f"研究失败: {st.session_state.research_error}")
                 
-                if research_results.get("success"):
-                    st.session_state.current_task = research_results
-                    st.session_state.research_results.append(research_results)
-                    progress_bar.progress(1.0)
-                    current_step_text.success("🎉 研究完成！")
-                else:
-                    st.session_state.research_error = research_results.get('error', '未知错误')
-                    current_step_text.error(f"研究失败: {st.session_state.research_error}")
-            elif "research_error_temp" in st.session_state:
-                error = st.session_state.research_error_temp
-                del st.session_state.research_error_temp
-                
-                if "用户停止了研究" in error:
-                    current_step_text.warning("🛑 研究已被用户停止")
-                else:
-                    st.session_state.research_error = error
-                    current_step_text.error(f"执行研究时发生错误: {error}")
+        except Exception as e:
+            st.session_state.is_researching = False
+            st.session_state.research_started = False  # 重置执行标记
             
-            st.rerun()
-        else:
-            # 研究仍在进行中，显示进度
-            progress_bar.progress(st.session_state.get("progress_percentage", 0) / 100)
-            
-            if st.session_state.get("current_step"):
-                current_step_text.info(f"🔄 {st.session_state.current_step}")
-            
-            # 显示进度消息
-            with messages_container:
-                with st.expander("📝 详细进度", expanded=True):
-                    for i, msg in enumerate(st.session_state.progress_messages[-10:], 1):
-                        st.text(f"{i}. {msg}")
-            
-            # 自动刷新以更新进度
-            time.sleep(0.5)
-            st.rerun()
+            error_msg = str(e)
+            if "用户停止了研究" in error_msg:
+                current_step_text.warning("🛑 研究已被用户停止")
+                st.session_state.research_error = None
+            else:
+                st.session_state.research_error = error_msg
+                current_step_text.error(f"执行研究时发生错误: {error_msg}")
+                import traceback
+                st.text(traceback.format_exc())
     
     # 显示结果
     if st.session_state.current_task and st.session_state.current_task.get("success"):
