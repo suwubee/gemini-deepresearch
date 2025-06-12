@@ -85,7 +85,8 @@ def initialize_session_state():
         "model_name": "gemini-2.0-flash",
         "research_complete": False,
         "research_error": None,
-        "research_started": False  # 添加执行标记
+        "research_started": False,  # 添加执行标记
+        "just_completed": False     # 刚刚完成标记
     }
     
     for key, default_value in defaults.items():
@@ -510,6 +511,12 @@ def research_interface():
                 st.warning("⚠️ 研究正在进行中，请等待完成或点击停止")
                 return
             
+            # 检查是否刚刚完成研究，防止意外重启
+            if st.session_state.get("just_completed", False):
+                st.info("✅ 上次研究已完成，如需新研究请再次点击")
+                st.session_state.just_completed = False
+                return
+            
             # 开始研究
             st.session_state.is_researching = True
             st.session_state.progress_messages = []
@@ -530,8 +537,8 @@ def research_interface():
             
             print(f"🚀 启动新研究任务: {st.session_state.current_research_id}")
             
-            # 重新运行以显示进度
-            st.rerun()
+            # 不要调用 st.rerun()，避免重复触发按钮
+            # st.rerun()
     else:
         if st.button("⏹️ 停止研究", type="secondary"):
             print("🛑 用户点击停止研究按钮")
@@ -547,12 +554,14 @@ def research_interface():
             if "current_research_id" in st.session_state:
                 del st.session_state.current_research_id
             
+            # 停止时可以安全地使用 st.rerun()，因为停止后不会重新触发
             st.rerun()
     
     # 执行研究（如果正在研究中且尚未开始执行）
     if (st.session_state.is_researching and 
         not st.session_state.research_complete and 
-        st.session_state.get("research_started", False)):
+        st.session_state.get("research_started", False) and
+        not st.session_state.get("just_completed", False)):  # 确保没有刚刚完成
         
         # 检查是否被用户停止
         if not st.session_state.is_researching:
@@ -565,6 +574,8 @@ def research_interface():
             st.session_state.is_researching = False
             st.session_state.research_started = False
             return
+        
+        print(f"🔄 执行研究任务: {st.session_state.current_research_id}")
         
         st.info("🔄 正在进行深度研究，请稍候...")
         
@@ -637,7 +648,12 @@ def research_interface():
                 st.session_state.research_results.append(research_results)
                 progress_bar.progress(1.0)
                 current_step_text.success("🎉 研究完成！")
-                st.rerun()
+                
+                # 设置完成标记，防止重新启动
+                st.session_state.just_completed = True
+                
+                # 不要调用 st.rerun()，避免意外重新触发研究
+                print(f"✅ 研究任务完成: {st.session_state.get('current_research_id', 'unknown')}")
             else:
                 st.session_state.research_error = research_results.get('error', '未知错误')
                 current_step_text.error(f"研究失败: {st.session_state.research_error}")
@@ -710,6 +726,10 @@ def sidebar_content():
         st.session_state.research_error = None
         st.session_state.current_step = ""
         st.session_state.progress_percentage = 0
+        st.session_state.research_started = False
+        st.session_state.just_completed = False
+        if "current_research_id" in st.session_state:
+            del st.session_state.current_research_id
         
         st.sidebar.success("会话已清空")
 
