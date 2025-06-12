@@ -84,7 +84,8 @@ def initialize_session_state():
         "progress_percentage": 0,
         "model_name": "gemini-2.0-flash",
         "research_complete": False,
-        "research_error": None
+        "research_error": None,
+        "research_started": False  # 添加执行标记
     }
     
     for key, default_value in defaults.items():
@@ -494,6 +495,9 @@ def research_interface():
             st.session_state.research_complete = False
             st.session_state.research_error = None
             
+            # 添加执行标记，避免重复执行
+            st.session_state.research_started = True
+            
             # 重新运行以显示进度
             st.rerun()
     else:
@@ -501,10 +505,13 @@ def research_interface():
             st.session_state.is_researching = False
             st.session_state.current_step = ""
             st.session_state.progress_percentage = 0
+            st.session_state.research_started = False
             st.rerun()
     
-    # 执行研究（如果正在研究中）
-    if st.session_state.is_researching and not st.session_state.research_complete:
+    # 执行研究（如果正在研究中且尚未开始执行）
+    if (st.session_state.is_researching and 
+        not st.session_state.research_complete and 
+        st.session_state.get("research_started", False)):
         st.info("🔄 正在进行深度研究，请稍候...")
         
         # 创建进度显示容器
@@ -555,6 +562,7 @@ def research_interface():
             # 研究完成
             st.session_state.is_researching = False
             st.session_state.research_complete = True
+            st.session_state.research_started = False  # 重置执行标记
             
             if research_results.get("success"):
                 st.session_state.current_task = research_results
@@ -568,6 +576,7 @@ def research_interface():
                 
         except Exception as e:
             st.session_state.is_researching = False
+            st.session_state.research_started = False  # 重置执行标记
             st.session_state.research_error = str(e)
             current_step_text.error(f"执行研究时发生错误: {str(e)}")
             import traceback

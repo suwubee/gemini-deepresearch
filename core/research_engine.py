@@ -308,6 +308,11 @@ class ResearchEngine:
             step4_result = await workflow.steps[3].execute(context)
             context.update(step4_result)
             
+            # 检查是否有API错误导致的搜索失败
+            if step4_result.get("api_error", False):
+                self._notify_step("⚠️ API错误，停止补充搜索循环")
+                break
+            
             # 如果没有额外结果，停止循环
             additional_results = step4_result.get("additional_results", [])
             if not additional_results:
@@ -323,6 +328,12 @@ class ResearchEngine:
             context.update(step3_result)
             
             analysis = step3_result.get("analysis", {})
+            
+            # 检查分析步骤是否因API错误而强制终止
+            if analysis.get("api_error", False):
+                self._notify_step("⚠️ 分析阶段API错误，终止搜索循环")
+                break
+            
             search_round += 1
             
             # 检查是否达到最大轮数
@@ -457,13 +468,29 @@ class ResearchEngine:
         
         except Exception as e:
             self._notify_step(f"反思分析失败，使用简单逻辑: {str(e)}")
-            # 降级处理
-            total_content = sum(len(content) for content in all_research_results)
-            reflection_result = {
-                "is_sufficient": total_content > 1500 or search_round >= max_search_rounds - 1,
-                "knowledge_gap": "分析失败，使用简单判断",
-                "follow_up_queries": [] if total_content > 1500 else [f"{user_query} 补充信息"]
-            }
+            
+            # 检查是否是API配额耗尽错误
+            error_str = str(e).lower()
+            is_quota_exhausted = any(keyword in error_str for keyword in [
+                "quota", "resource_exhausted", "rate limit", "429"
+            ])
+            
+            if is_quota_exhausted:
+                # 如果是配额耗尽，强制标记为信息充足，停止循环
+                self._notify_step("⚠️ API配额耗尽，强制终止搜索循环")
+                reflection_result = {
+                    "is_sufficient": True,  # 强制终止
+                    "knowledge_gap": "API配额耗尽，无法继续分析",
+                    "follow_up_queries": []
+                }
+            else:
+                # 其他错误的降级处理
+                total_content = sum(len(content) for content in all_research_results)
+                reflection_result = {
+                    "is_sufficient": total_content > 1500 or search_round >= max_search_rounds - 1,
+                    "knowledge_gap": "分析失败，使用简单判断",
+                    "follow_up_queries": [] if total_content > 1500 else [f"{user_query} 补充信息"]
+                }
         
         # 保存反思分析结果
         reflection_with_metadata = {
@@ -474,10 +501,16 @@ class ResearchEngine:
         }
         self.state_manager.add_reflection_result(reflection_with_metadata)
         
+        # 如果是API配额耗尽导致的强制终止，标记API错误
+        api_error = False
+        if "配额耗尽" in reflection_result.get("knowledge_gap", ""):
+            api_error = True
+        
         return {
             "analysis": reflection_result,
             "search_round": search_round + 1,
-            "max_search_rounds": max_search_rounds
+            "max_search_rounds": max_search_rounds,
+            "api_error": api_error
         }
     
     async def _supplementary_search_step(self, **kwargs) -> Dict[str, Any]:
@@ -506,20 +539,39 @@ class ResearchEngine:
         for i, query in enumerate(follow_up_queries[:2]):  # 限制每轮最多2个查询
             self._notify_step(f"补充搜索 {i+1}/{len(follow_up_queries[:2])}: {query[:30]}...")
             
-            result = await self.search_agent.search_with_grounding(query)
-            
-            if result.get("success"):
-                self.state_manager.add_search_result(query, result)
+            try:
+                result = await self.search_agent.search_with_grounding(query)
                 
-                # 保存到分析过程
-                web_research_content = f"Supplementary Query: {query}\nContent: {result.get('content', '')}"
-                if result.get('citations'):
-                    citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" 
-                                               for cite in result.get('citations', [])[:3]])
-                    web_research_content += f"\nCitations:\n{citations_text}"
-                self.state_manager.add_web_research_result(web_research_content)
+                if result.get("success"):
+                    self.state_manager.add_search_result(query, result)
+                    
+                    # 保存到分析过程
+                    web_research_content = f"Supplementary Query: {query}\nContent: {result.get('content', '')}"
+                    if result.get('citations'):
+                        citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" 
+                                                   for cite in result.get('citations', [])[:3]])
+                        web_research_content += f"\nCitations:\n{citations_text}"
+                    self.state_manager.add_web_research_result(web_research_content)
+                    
+                    additional_results.append(result)
+                    
+            except Exception as e:
+                error_str = str(e).lower()
+                is_quota_exhausted = any(keyword in error_str for keyword in [
+                    "quota", "resource_exhausted", "rate limit", "429"
+                ])
                 
-                additional_results.append(result)
+                if is_quota_exhausted:
+                    self._notify_step(f"⚠️ 补充搜索API配额耗尽，停止当前搜索")
+                    return {
+                        "additional_results": additional_results,
+                        "continue_search": False,
+                        "search_round": search_round,
+                        "max_search_rounds": max_search_rounds,
+                        "api_error": True
+                    }
+                else:
+                    self._notify_step(f"补充搜索失败: {str(e)}")
             
             # 添加延迟避免速率限制
             time.sleep(1)
