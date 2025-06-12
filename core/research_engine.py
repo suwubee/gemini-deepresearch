@@ -424,8 +424,9 @@ class ResearchEngine:
                 # 保存到分析过程（参考原始backend结构）
                 web_research_content = f"Query: {query}\nContent: {result.get('content', '')}"
                 if result.get('citations'):
+                    citations_list = result.get('citations', []) or []
                     citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" 
-                                               for cite in result.get('citations', [])[:3]])
+                                               for cite in citations_list[:3]])
                     web_research_content += f"\nCitations:\n{citations_text}"
                 self.state_manager.add_web_research_result(web_research_content)
                 
@@ -541,7 +542,8 @@ class ResearchEngine:
         
         # 如果是API配额耗尽导致的强制终止，标记API错误
         api_error = False
-        if "配额耗尽" in reflection_result.get("knowledge_gap", ""):
+        knowledge_gap = reflection_result.get("knowledge_gap", "") or ""
+        if "配额耗尽" in knowledge_gap:
             api_error = True
         
         return {
@@ -586,8 +588,9 @@ class ResearchEngine:
                     # 保存到分析过程
                     web_research_content = f"Supplementary Query: {query}\nContent: {result.get('content', '')}"
                     if result.get('citations'):
+                        citations_list = result.get('citations', []) or []
                         citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" 
-                                                   for cite in result.get('citations', [])[:3]])
+                                                   for cite in citations_list[:3]])
                         web_research_content += f"\nCitations:\n{citations_text}"
                     self.state_manager.add_web_research_result(web_research_content)
                     
@@ -640,7 +643,8 @@ class ResearchEngine:
             if result.content:
                 summary = f"Query: {result.query}\nContent: {result.content}"
                 if result.citations:
-                    citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" for cite in result.citations[:3]])
+                    citations_list = result.citations or []
+                    citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" for cite in citations_list[:3]])
                     summary += f"\nCitations:\n{citations_text}"
                 search_summaries.append(summary)
         
@@ -728,7 +732,8 @@ Note: This information is gathered from web searches. Please verify for accuracy
             # 准备搜索结果用于AI合成
             search_summaries = [f"Query: {user_query}\nContent: {content}"]
             if citations:
-                citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" for cite in citations[:3]])
+                citations_list = citations or []
+                citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" for cite in citations_list[:3]])
                 search_summaries[0] += f"\nCitations:\n{citations_text}"
             
             # 使用AI来合成答案，让AI判断用户语言

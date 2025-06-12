@@ -196,7 +196,7 @@ class SearchAgent:
                             uri = getattr(chunk.web, 'uri', '#')
                             
                             # 清理标题（移除文件扩展名等）
-                            if title and '.' in title:
+                            if title and isinstance(title, str) and '.' in title:
                                 title = title.split('.')[0]
                             
                             # 尝试提取真实域名和URL
@@ -204,21 +204,22 @@ class SearchAgent:
                             actual_url = uri
                             
                             # 如果是vertexaisearch重定向链接，尝试从标题推断实际域名
-                            if 'vertexaisearch.cloud.google.com' in uri:
+                            if uri and 'vertexaisearch.cloud.google.com' in uri:
                                 # 尝试从标题推断真实网站
-                                if 'bondcap' in title.lower():
+                                title_lower = title.lower() if title and isinstance(title, str) else ""
+                                if 'bondcap' in title_lower:
                                     actual_url = "https://bondcap.com"
                                     domain = "bondcap.com"
-                                elif 'zdnet' in title.lower():
+                                elif 'zdnet' in title_lower:
                                     actual_url = "https://zdnet.com" 
                                     domain = "zdnet.com"
-                                elif 'techcrunch' in title.lower():
+                                elif 'techcrunch' in title_lower:
                                     actual_url = "https://techcrunch.com"
                                     domain = "techcrunch.com"
-                                elif 'forbes' in title.lower():
+                                elif 'forbes' in title_lower:
                                     actual_url = "https://forbes.com"
                                     domain = "forbes.com"
-                                elif 'precedence' in title.lower():
+                                elif 'precedence' in title_lower:
                                     actual_url = "https://precedenceresearch.com"
                                     domain = "precedenceresearch.com"
                                 else:
@@ -227,7 +228,7 @@ class SearchAgent:
                                     domain = "Grounding Search"
                             else:
                                 # 正常URL处理
-                                if '//' in uri:
+                                if uri and '//' in uri:
                                     try:
                                         domain = uri.split('//')[1].split('/')[0]
                                         actual_url = uri

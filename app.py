@@ -327,7 +327,8 @@ def display_search_results(research_results):
                     
                     if result.citations:
                         st.markdown("**引用来源:**")
-                        for j, citation in enumerate(result.citations[:3]):
+                        citations_list = result.citations or []
+                        for j, citation in enumerate(citations_list[:3]):
                             title = citation.get("title", "未知标题")
                             url = citation.get("url", "#")
                             st.markdown(f"- [{title}]({url})")
@@ -439,7 +440,8 @@ def display_final_answer(research_results):
                 
                 if urls:
                     st.markdown("**相关链接:**")
-                    for url in urls[:10]:
+                    urls_list = urls or []
+                    for url in urls_list[:10]:
                         st.markdown(f"- {url}")
 
 
