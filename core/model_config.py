@@ -15,13 +15,13 @@ class ModelConfiguration:
     search_model: str = "gemini-2.0-flash"
     query_generator_model: str = "gemini-2.0-flash"
     
-    # 分析反思模型 - 使用最新2.5版本
+    # 分析反思模型
     reflection_model: str = "gemini-2.5-flash-preview-05-20"
     
-    # 最终答案生成模型 - 使用最新2.5 Pro版本
+    # 最终答案生成模型
     answer_model: str = "gemini-2.5-pro-preview-06-05"
     
-    # 任务分析模型 - 使用最新2.5版本
+    # 任务分析模型
     task_analysis_model: str = "gemini-2.5-flash-preview-05-20"
     
     # 初始查询数量配置（参考原始frontend规格）
@@ -46,22 +46,17 @@ class ModelConfiguration:
         config.query_generator_model = "gemini-2.0-flash"
         
         # 其他功能使用用户选择的模型
-        config.reflection_model = user_model
-        config.answer_model = user_model
-        config.task_analysis_model = user_model
+        if user_model:
+            config.reflection_model = user_model
+            config.answer_model = user_model
+            config.task_analysis_model = user_model
         
         return config
     
     @classmethod
     def get_default_config(cls) -> "ModelConfiguration":
-        """获取默认配置（参考原始backend）"""
-        return cls(
-            search_model="gemini-2.0-flash",
-            query_generator_model="gemini-2.0-flash", 
-            reflection_model="gemini-2.5-flash-preview-05-20",
-            answer_model="gemini-2.5-pro-preview-06-05",
-            task_analysis_model="gemini-2.5-flash-preview-05-20"
-        )
+        """获取默认配置"""
+        return cls()
     
     def get_model_for_task(self, task_type: str) -> str:
         """根据任务类型获取对应模型"""
@@ -76,8 +71,7 @@ class ModelConfiguration:
         return task_model_map.get(task_type, self.search_model)
     
     def get_token_limits(self, task_type: str) -> int:
-        """根据任务类型获取token限制 - 大幅增加以防止截断"""
-        # 大幅增加token限制，防止输出截断
+        """根据任务类型获取token限制"""
         token_limits = {
             "search": 8192,          # 搜索结果可能很长
             "query_generation": 4096, # 查询生成
@@ -96,7 +90,10 @@ model_config = ModelConfiguration.get_default_config()
 def set_user_model(user_model: str):
     """设置用户选择的模型"""
     global model_config
-    model_config = ModelConfiguration.from_user_model(user_model)
+    if user_model:
+        model_config = ModelConfiguration.from_user_model(user_model)
+    else:
+        model_config = ModelConfiguration.get_default_config()
 
 
 def get_model_config() -> ModelConfiguration:
