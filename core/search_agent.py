@@ -246,47 +246,18 @@ class SearchAgent:
                             if title and isinstance(title, str) and '.' in title:
                                 title = title.split('.')[0]
                             
-                            # 尝试提取真实域名和URL
+                            # 提取域名
                             domain = 'Unknown Domain'
-                            actual_url = uri
-                            
-                            # 如果是vertexaisearch重定向链接，尝试从标题推断实际域名
-                            if uri and 'vertexaisearch.cloud.google.com' in uri:
-                                # 尝试从标题推断真实网站
-                                title_lower = title.lower() if title and isinstance(title, str) else ""
-                                if 'bondcap' in title_lower:
-                                    actual_url = "https://bondcap.com"
-                                    domain = "bondcap.com"
-                                elif 'zdnet' in title_lower:
-                                    actual_url = "https://zdnet.com" 
-                                    domain = "zdnet.com"
-                                elif 'techcrunch' in title_lower:
-                                    actual_url = "https://techcrunch.com"
-                                    domain = "techcrunch.com"
-                                elif 'forbes' in title_lower:
-                                    actual_url = "https://forbes.com"
-                                    domain = "forbes.com"
-                                elif 'precedence' in title_lower:
-                                    actual_url = "https://precedenceresearch.com"
-                                    domain = "precedenceresearch.com"
-                                else:
-                                    # 保持原始URI，但提取显示域名
-                                    actual_url = uri
-                                    domain = "Grounding Search"
-                            else:
-                                # 正常URL处理
-                                if uri and '//' in uri:
-                                    try:
-                                        domain = uri.split('//')[1].split('/')[0]
-                                        actual_url = uri
-                                    except:
-                                        domain = 'Unknown Domain'
-                                        actual_url = uri
+                            if uri and '//' in uri:
+                                try:
+                                    domain = uri.split('//')[1].split('/')[0]
+                                except:
+                                    domain = 'Unknown Domain'
                             
                             chunk_citations.append({
                                 "title": title,
-                                "url": actual_url,  # 使用处理后的实际URL
-                                "description": f"Source from {domain}"
+                                "url": uri,
+                                "description": f"来源: {domain}"
                             })
                 
                 if chunk_citations:
