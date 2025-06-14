@@ -122,8 +122,8 @@ class ResearchEngine:
             if self._stop_research:
                 return {"success": False, "error": "研究被用户停止"}
             
-            # 3. 替换工作流步骤函数为实际实现，并调整查询数量
-            self._inject_research_functions(workflow, max_search_rounds, effort_level)
+            # 3. 替换工作流步骤函数为实际实现
+            self._inject_research_functions(workflow)
             
             # 4. 执行工作流
             self.state_manager.update_task_progress(status=TaskStatus.ANALYZING)
@@ -234,9 +234,9 @@ class ResearchEngine:
             print(f"❌ 工作流构建异常: {e}")
             
             # 创建一个简单的降级工作流
-            return self._create_fallback_workflow(user_query)
+            return self._create_fallback_workflow()
     
-    def _create_fallback_workflow(self, user_query: str) -> DynamicWorkflow:
+    def _create_fallback_workflow(self) -> DynamicWorkflow:
         """创建降级工作流"""
         workflow_config = {
             "task_type": "问答系统",
@@ -247,22 +247,11 @@ class ResearchEngine:
             "estimated_time": "1-2分钟",
             "reasoning": "降级工作流：直接搜索和回答"
         }
-        
-        workflow = DynamicWorkflow(workflow_config)
-        
-        workflow.add_step(WorkflowStep(
-            "简单搜索",
-            "执行基本搜索",
-            self._simple_search_step
-        ))
-        
-        workflow.add_step(WorkflowStep(
-            "生成答案",
-            "基于搜索结果生成答案",
-            self._generate_simple_answer_step
-        ))
-        
-        return workflow
+        steps_config = [
+            {"name": "simple_search", "description": "执行简单的网络搜索"},
+            {"name": "generate_final_answer", "description": "生成最终答案"}
+        ]
+        return DynamicWorkflow(workflow_config, steps_config)
     
     def _adjust_workflow_by_effort(self, workflow: DynamicWorkflow, effort_level: str):
         """根据努力级别调整工作流参数（参考原始frontend规格）"""
@@ -302,7 +291,7 @@ class ResearchEngine:
         
         print(f"🎯 用户effort级别: {effort_level} → 复杂度: {workflow.config['complexity']}")
     
-    def _inject_research_functions(self, workflow: DynamicWorkflow, max_search_rounds: int = 3, effort_level: str = "medium"):
+    def _inject_research_functions(self, workflow: DynamicWorkflow):
         """将实际的研究函数注入到工作流步骤中"""
         
         function_mapping = {
@@ -314,67 +303,72 @@ class ResearchEngine:
             "simple_search": self._simple_search_step,
         }
 
-        for step in workflow.steps:
-            if step.name in function_mapping:
-                step.function = function_mapping[step.name]
+        # 替换 workflow.steps 为绑定了函数的完整 WorkflowStep 实例
+        injected_steps = []
+        for step_config in workflow.steps_config:
+            step_name = step_config["name"]
+            if step_name in function_mapping:
+                step_function = function_mapping[step_name]
+                injected_steps.append(WorkflowStep(
+                    name=step_name,
+                    description=step_config["description"],
+                    function=step_function
+                ))
             else:
-                # 如果找不到对应的函数，可以抛出错误或设置一个默认函数
-                raise ValueError(f"未找到工作流步骤 '{step.name}' 对应的实现函数")
+                raise ValueError(f"未找到工作流步骤 '{step_name}' 对应的实现函数")
         
-        # 将参数注入到上下文
-        workflow.context.update({
-            "max_search_rounds": max_search_rounds,
-            "effort_level": effort_level,
-        })
+        workflow.steps = injected_steps
     
     async def _execute_workflow(self, workflow: DynamicWorkflow, 
                                user_query: str, max_search_rounds: int) -> Dict[str, Any]:
-        """执行工作流 - 支持动态多轮搜索（参考原始backend逻辑）"""
-        initial_context = {
+        """执行工作流，包含可能的多轮研究"""
+        
+        context = {
             "user_query": user_query,
-            "max_search_rounds": max_search_rounds,
-            "search_round": 0
+            "max_search_rounds": max_search_rounds
         }
-        
-        # 循环执行，直到满足停止条件
-        current_round = 0
-        while current_round < max_search_rounds:
-            current_round += 1
-            self._notify_step(f"第 {current_round}/{max_search_rounds} 轮研究开始...")
+
+        # 执行初始步骤，直到需要循环的"补充搜索"或"最终答案"
+        for step in workflow.steps:
+            if step.name == "supplementary_search" or step.name == "generate_final_answer":
+                break # 结束初始步骤的执行
             
-            # 检查是否应该退出循环（例如，已经找到足够信息）
-            if initial_context.get("should_break_loop", False) and current_round > 1:
-                self._notify_step("已收集足够信息，准备生成最终报告...")
-                break
+            result = await self._execute_step_with_context(step, context)
+            context.update(result)
 
-            # 执行工作流中的每一步
-            for step in workflow.steps:
-                if step.name == "generate_search_queries":
-                    # 如果不是第一轮，且没有需要补充搜索的问题，则跳过
-                    if current_round > 1 and not initial_context.get("unanswered_questions"):
-                        self._notify_step("没有需要补充搜索的问题，跳过查询生成。")
-                        continue
+        # 如果定义了补充搜索，则进入循环
+        supplementary_search_step = next((s for s in workflow.steps if s.name == "supplementary_search"), None)
+        if supplementary_search_step:
+            current_round = 1
+            while current_round < max_search_rounds:
+                self._notify_step(f"第 {current_round+1}/{max_search_rounds} 轮补充研究开始...")
                 
-                # 在第一轮之后，如果分析步骤认为可以结束，则跳出
-                if current_round > 1 and step.name == "analyze_search_results":
-                    if initial_context.get("sufficient_information"):
-                        self._notify_step("分析表明信息已足够，准备结束研究。")
-                        initial_context["should_break_loop"] = True
-                        break # 跳出内层 for 循环
+                # 如果分析后认为信息充足，则跳出循环
+                if context.get("is_sufficient"):
+                    self._notify_step("信息已充足，跳过补充研究。")
+                    break
 
-                step_result = await self._execute_step_with_context(step, initial_context)
-                initial_context.update(step_result)
+                # 执行补充搜索
+                result = await self._execute_step_with_context(supplementary_search_step, context)
+                context.update(result)
+                
+                # 再次分析结果
+                analyze_step = next((s for s in workflow.steps if s.name == "analyze_search_results"), None)
+                if analyze_step:
+                    analysis_result = await self._execute_step_with_context(analyze_step, context)
+                    context.update(analysis_result)
 
-            # 如果在内层循环中决定跳出，外层也跳出
-            if initial_context.get("should_break_loop", False):
-                break
-        
-        # 无论循环如何结束，最后都生成最终答案
-        self._notify_step("所有研究轮次完成，正在生成最终报告...")
-        final_answer_result = await self._generate_final_answer_step(context=initial_context)
-        initial_context.update(final_answer_result)
+                current_round += 1
 
-        return initial_context
+        # 循环结束，执行最终的答案生成
+        final_answer_step = next((s for s in workflow.steps if s.name == "generate_final_answer"), None)
+        if final_answer_step:
+            final_result = await self._execute_step_with_context(final_answer_step, context)
+            context.update(final_result)
+        else:
+            raise ValueError("工作流中未定义 'generate_final_answer' 步骤")
+
+        return context
     
     async def _execute_step_with_context(self, step: WorkflowStep, context: Dict[str, Any]) -> Dict[str, Any]:
         """执行工作流步骤并返回结果"""
