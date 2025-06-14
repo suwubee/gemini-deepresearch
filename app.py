@@ -157,6 +157,8 @@ class SafeLocalStorage:
 # 导入核心组件
 from core.research_engine import ResearchEngine
 from core.state_manager import TaskStatus
+from core.api_config import APIConfig, APIMode, ModelConfig
+from core.api_factory import APIClientFactory
 from utils.debug_logger import enable_debug, disable_debug, get_debug_logger
 from utils.streamlit_helpers import (
     json_serializable,
@@ -177,8 +179,23 @@ st.set_page_config(
 # 可用的模型列表（基于测试结果更新）
 AVAILABLE_MODELS = {
     "gemini-2.0-flash": "🚀 Gemini 2.0 Flash - 便宜最快",
-    "gemini-2.5-flash-preview-05-20": "⚡ Gemini 2.5 Flash - 最新功能",
+    "gemini-2.5-flash-preview-05-20": "⚡ Gemini 2.5 Flash - 最新功能", 
     "gemini-2.5-pro-preview-06-05": "💫 Gemini 2.5 Pro - 0605最新"
+}
+
+# 任务类型到模型的映射
+TASK_MODEL_MAPPING = {
+    "search": "搜索模型",
+    "task_analysis": "任务分析模型", 
+    "reflection": "反思分析模型",
+    "answer": "答案生成模型"
+}
+
+# API模式选项
+API_MODE_OPTIONS = {
+    APIMode.GENAI: "🔵 Google GenAI SDK (推荐)",
+    APIMode.OPENAI: "🟠 OpenAI兼容 HTTP API",
+    APIMode.AUTO: "🔄 自动选择"
 }
 
 # 自定义CSS样式
@@ -238,7 +255,23 @@ def initialize_session_state():
         "research_started": False,  # 添加执行标记
         "just_completed": False,    # 刚刚完成标记
         "debug_enabled": False,     # debug模式开关
-        "show_markdown_preview": False  # markdown预览开关
+        "show_markdown_preview": False,  # markdown预览开关
+        
+        # 双模式API配置
+        "api_mode": APIMode.GENAI,
+        "openai_config": {
+            'base_url': 'https://api.openai.com/v1',
+            'api_key': '',
+            'timeout': 30
+        },
+        "task_models": {
+            'search': 'gemini-2.0-flash',
+            'task_analysis': 'gemini-2.5-flash-preview-05-20',
+            'reflection': 'gemini-2.5-flash-preview-05-20', 
+            'answer': 'gemini-2.5-pro-preview-06-05'
+        },
+        "custom_models": [],
+        "config_changed": False
     }
     
     for key, default_value in defaults.items():
@@ -324,18 +357,148 @@ def initialize_from_localstorage():
         st.session_state['localstorage_initialized'] = True
 
 
+def load_config_from_storage():
+    """从LocalStorage加载配置"""
+    localS = SafeLocalStorage()
+    
+    try:
+        # 加载API模式
+        api_mode_str = localS.getItem("api_mode")
+        if api_mode_str:
+            try:
+                st.session_state.api_mode = APIMode(api_mode_str)
+            except:
+                st.session_state.api_mode = APIMode.GENAI
+        
+        # 加载OpenAI配置
+        openai_config = localS.getItem("openai_config")
+        if openai_config:
+            try:
+                import json
+                st.session_state.openai_config = json.loads(openai_config)
+            except:
+                pass
+        
+        # 加载任务模型配置
+        task_models = localS.getItem("task_models")
+        if task_models:
+            try:
+                import json
+                st.session_state.task_models = json.loads(task_models)
+            except:
+                pass
+        
+        # 加载自定义模型
+        custom_models = localS.getItem("custom_models")
+        if custom_models:
+            try:
+                import json
+                st.session_state.custom_models = json.loads(custom_models)
+            except:
+                pass
+                
+    except Exception as e:
+        st.warning(f"加载配置失败: {e}")
+
+
+def save_config_to_storage():
+    """保存配置到LocalStorage"""
+    localS = SafeLocalStorage()
+    
+    try:
+        # 保存API模式
+        localS.setItem("api_mode", st.session_state.api_mode.value)
+        
+        # 保存OpenAI配置
+        import json
+        localS.setItem("openai_config", json.dumps(st.session_state.openai_config))
+        
+        # 保存任务模型配置
+        localS.setItem("task_models", json.dumps(st.session_state.task_models))
+        
+        # 保存自定义模型
+        localS.setItem("custom_models", json.dumps(st.session_state.custom_models))
+        
+    except Exception as e:
+        st.warning(f"保存配置失败: {e}")
+
+
+def update_api_config():
+    """更新API配置到APIConfig"""
+    try:
+        # 更新全局设置
+        APIConfig.update_global_setting("gemini_2_0_preferred_mode", st.session_state.api_mode)
+        
+        # 添加自定义模型到APIConfig
+        for custom_model in st.session_state.custom_models:
+            model_config = ModelConfig(
+                name=custom_model["name"],
+                mode=APIMode.OPENAI,
+                supports_search=custom_model.get("supports_search", False),
+                supports_tools=custom_model.get("supports_tools", True),
+                base_url=custom_model.get("base_url", st.session_state.openai_config["base_url"]),
+                default_params=custom_model.get("default_params", {"temperature": 0.3, "max_tokens": 4096})
+            )
+            APIConfig.add_model_config(custom_model["name"], model_config)
+        
+        # 更新OpenAI兼容配置
+        if st.session_state.openai_config["base_url"] != "https://api.openai.com/v1":
+            custom_openai_config = {
+                "base_url": st.session_state.openai_config["base_url"],
+                "headers": {"Content-Type": "application/json"},
+                "timeout": st.session_state.openai_config["timeout"],
+                "retry_count": 3
+            }
+            APIConfig.OPENAI_COMPATIBLE_CONFIGS["custom"] = custom_openai_config
+            
+    except Exception as e:
+        st.error(f"更新API配置失败: {e}")
+
+
 def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
     """验证API密钥并设置引擎"""
     if not api_key or len(api_key) < 10:
         return False
     
     try:
-        if (st.session_state.research_engine is None or 
-            st.session_state.model_name != model_name):
+        # 检查是否需要重新创建引擎
+        need_recreate = (
+            st.session_state.research_engine is None or 
+            st.session_state.model_name != model_name or
+            st.session_state.config_changed
+        )
+        
+        if need_recreate:
+            # 更新API配置
+            update_api_config()
             
-            engine = ResearchEngine(api_key, model_name)
+            # 根据API模式创建引擎
+            if st.session_state.api_mode == APIMode.OPENAI:
+                # 使用OpenAI模式时，需要设置API密钥
+                if not st.session_state.openai_config.get("api_key"):
+                    st.session_state.openai_config["api_key"] = api_key
+            
+            # 使用任务模型配置创建引擎
+            engine = ResearchEngine(
+                api_key=api_key,
+                model_name=st.session_state.task_models.get("search", model_name),
+                preferred_mode=st.session_state.api_mode
+            )
+            
+            # 更新引擎的模型配置
+            if hasattr(engine, 'client_manager') and hasattr(engine.client_manager, 'update_config'):
+                try:
+                    engine.client_manager.update_config(
+                        search_model=st.session_state.task_models.get("search", model_name),
+                        analysis_model=st.session_state.task_models.get("task_analysis", model_name),
+                        answer_model=st.session_state.task_models.get("answer", model_name)
+                    )
+                except Exception as e:
+                    st.warning(f"更新模型配置时出现警告: {e}")
+            
             st.session_state.research_engine = engine
             st.session_state.model_name = model_name
+            st.session_state.config_changed = False
             
         return True
     except Exception as e:
@@ -343,53 +506,346 @@ def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
         return False
 
 
-def setup_api_key():
-    """设置API密钥和模型选择"""
-    st.sidebar.header("🔧 配置")
+def export_config():
+    """导出配置到JSON文件"""
+    try:
+        config_data = {
+            "api_mode": st.session_state.api_mode.value,
+            "openai_config": st.session_state.openai_config,
+            "task_models": st.session_state.task_models,
+            "custom_models": st.session_state.custom_models,
+            "export_time": datetime.now().isoformat(),
+            "version": "1.0"
+        }
+        
+        # 移除敏感信息
+        safe_config = config_data.copy()
+        if "api_key" in safe_config["openai_config"]:
+            safe_config["openai_config"]["api_key"] = "***HIDDEN***"
+        
+        config_json = json.dumps(safe_config, indent=2, ensure_ascii=False)
+        
+        st.sidebar.download_button(
+            label="💾 下载配置文件",
+            data=config_json,
+            file_name=f"deepsearch_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            help="下载配置文件（不包含API密钥）"
+        )
+        
+        st.sidebar.success("✅ 配置已准备下载")
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ 导出配置失败: {e}")
+
+
+def import_config(uploaded_file):
+    """导入配置文件"""
+    try:
+        config_data = json.load(uploaded_file)
+        
+        # 验证配置文件格式
+        required_keys = ["api_mode", "openai_config", "task_models"]
+        if not all(key in config_data for key in required_keys):
+            st.sidebar.error("❌ 配置文件格式不正确")
+            return
+        
+        # 导入配置
+        try:
+            st.session_state.api_mode = APIMode(config_data["api_mode"])
+        except:
+            st.session_state.api_mode = APIMode.GENAI
+        
+        # 保留当前的API密钥
+        current_api_key = st.session_state.openai_config.get("api_key", "")
+        st.session_state.openai_config = config_data["openai_config"]
+        if current_api_key and not st.session_state.openai_config.get("api_key"):
+            st.session_state.openai_config["api_key"] = current_api_key
+        
+        st.session_state.task_models = config_data["task_models"]
+        
+        if "custom_models" in config_data:
+            st.session_state.custom_models = config_data["custom_models"]
+        
+        st.session_state.config_changed = True
+        save_config_to_storage()
+        
+        st.sidebar.success("✅ 配置导入成功")
+        st.rerun()
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ 导入配置失败: {e}")
+
+
+def reset_config():
+    """重置配置到默认值"""
+    try:
+        # 保留当前的API密钥
+        current_gemini_key = st.session_state.get("api_key_to_load", "")
+        current_openai_key = st.session_state.openai_config.get("api_key", "")
+        
+        # 重置到默认值
+        st.session_state.api_mode = APIMode.GENAI
+        st.session_state.openai_config = {
+            'base_url': 'https://api.openai.com/v1',
+            'api_key': current_openai_key,
+            'timeout': 30
+        }
+        st.session_state.task_models = {
+            'search': 'gemini-2.0-flash',
+            'task_analysis': 'gemini-2.5-flash-preview-05-20',
+            'reflection': 'gemini-2.5-flash-preview-05-20', 
+            'answer': 'gemini-2.5-pro-preview-06-05'
+        }
+        st.session_state.custom_models = []
+        st.session_state.config_changed = True
+        
+        # 恢复API密钥
+        if current_gemini_key:
+            st.session_state.api_key_to_load = current_gemini_key
+        
+        save_config_to_storage()
+        
+        st.sidebar.success("✅ 配置已重置")
+        st.rerun()
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ 重置配置失败: {e}")
+
+
+def setup_api_configuration():
+    """设置API配置界面"""
+    st.sidebar.header("🔧 API配置")
+    
+    # 加载配置
+    load_config_from_storage()
     
     localS = SafeLocalStorage()
     
-    # 模型选择
-    model_name = st.sidebar.selectbox(
-        "选择模型",
-        options=list(AVAILABLE_MODELS.keys()),
-        index=0,
-        format_func=lambda x: AVAILABLE_MODELS[x],
-        help="选择要使用的Gemini模型版本"
+    # API模式选择
+    api_mode = st.sidebar.selectbox(
+        "API模式",
+        options=list(API_MODE_OPTIONS.keys()),
+        index=list(API_MODE_OPTIONS.keys()).index(st.session_state.api_mode),
+        format_func=lambda x: API_MODE_OPTIONS[x],
+        help="选择API调用模式"
     )
     
-    # 优先使用 state 中预加载的 key
-    api_key_from_storage = st.session_state.get("api_key_to_load")
+    if api_mode != st.session_state.api_mode:
+        st.session_state.api_mode = api_mode
+        st.session_state.config_changed = True
+        save_config_to_storage()
     
-    # 如果没有从secrets获取到，让用户输入
-    api_key = st.sidebar.text_input(
-        "Gemini API Key",
-        type="password",
-        value=api_key_from_storage or "",
-        help="请输入您的 Google Gemini API 密钥"
+    # 根据模式显示不同的配置
+    if st.session_state.api_mode == APIMode.OPENAI:
+        st.sidebar.subheader("🟠 OpenAI兼容配置")
+        
+        # Base URL配置
+        base_url = st.sidebar.text_input(
+            "Base URL",
+            value=st.session_state.openai_config["base_url"],
+            help="OpenAI兼容API的基础URL"
+        )
+        
+        # API密钥配置
+        openai_api_key = st.sidebar.text_input(
+            "API Key",
+            type="password",
+            value=st.session_state.openai_config.get("api_key", ""),
+            help="OpenAI兼容API的密钥"
+        )
+        
+        # 超时配置
+        timeout = st.sidebar.number_input(
+            "请求超时(秒)",
+            min_value=10,
+            max_value=120,
+            value=st.session_state.openai_config["timeout"],
+            help="API请求超时时间"
+        )
+        
+        # 更新OpenAI配置
+        if (base_url != st.session_state.openai_config["base_url"] or
+            openai_api_key != st.session_state.openai_config.get("api_key", "") or
+            timeout != st.session_state.openai_config["timeout"]):
+            
+            st.session_state.openai_config.update({
+                "base_url": base_url,
+                "api_key": openai_api_key,
+                "timeout": timeout
+            })
+            st.session_state.config_changed = True
+            save_config_to_storage()
+        
+        # 显示当前配置状态
+        if base_url and openai_api_key:
+            st.sidebar.success("✅ OpenAI配置完成")
+        else:
+            st.sidebar.warning("⚠️ 请完成OpenAI配置")
+    
+    else:
+        st.sidebar.subheader("🔵 Google GenAI配置")
+        
+        # 优先使用 state 中预加载的 key
+        api_key_from_storage = st.session_state.get("api_key_to_load")
+        
+        # Gemini API密钥输入
+        gemini_api_key = st.sidebar.text_input(
+            "Gemini API Key",
+            type="password",
+            value=api_key_from_storage or "",
+            help="请输入您的 Google Gemini API 密钥"
+        )
+        
+        if gemini_api_key:
+            st.sidebar.success("✅ Gemini API密钥已设置")
+    
+    return setup_model_configuration()
+
+
+def setup_model_configuration():
+    """设置模型配置"""
+    st.sidebar.divider()
+    st.sidebar.subheader("🎯 模型配置")
+    
+    # 获取可用模型列表
+    available_models = list(AVAILABLE_MODELS.keys())
+    
+    # 添加自定义模型到可用列表
+    for custom_model in st.session_state.custom_models:
+        if custom_model["name"] not in available_models:
+            available_models.append(custom_model["name"])
+    
+    # 主模型选择
+    main_model = st.sidebar.selectbox(
+        "主要模型",
+        options=available_models,
+        index=0 if st.session_state.model_name not in available_models else available_models.index(st.session_state.model_name),
+        format_func=lambda x: AVAILABLE_MODELS.get(x, f"🔧 {x} (自定义)"),
+        help="选择主要使用的模型"
     )
+    
+    # 高级模型配置
+    with st.sidebar.expander("🔧 高级模型配置", expanded=False):
+        st.write("为不同任务配置专用模型:")
+        
+        for task_key, task_name in TASK_MODEL_MAPPING.items():
+            current_model = st.session_state.task_models.get(task_key, main_model)
+            
+            new_model = st.selectbox(
+                task_name,
+                options=available_models,
+                index=available_models.index(current_model) if current_model in available_models else 0,
+                format_func=lambda x: AVAILABLE_MODELS.get(x, f"🔧 {x} (自定义)"),
+                key=f"task_model_{task_key}"
+            )
+            
+            if new_model != st.session_state.task_models.get(task_key):
+                st.session_state.task_models[task_key] = new_model
+                st.session_state.config_changed = True
+                save_config_to_storage()
+    
+    # 自定义模型管理
+    with st.sidebar.expander("➕ 自定义模型", expanded=False):
+        st.write("添加OpenAI兼容的自定义模型:")
+        
+        with st.form("add_custom_model"):
+            model_name = st.text_input("模型名称", placeholder="gpt-4-custom")
+            model_base_url = st.text_input("Base URL", value=st.session_state.openai_config["base_url"])
+            supports_search = st.checkbox("支持搜索", value=False)
+            supports_tools = st.checkbox("支持工具调用", value=True)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                temperature = st.number_input("Temperature", min_value=0.0, max_value=2.0, value=0.3, step=0.1)
+            with col2:
+                max_tokens = st.number_input("Max Tokens", min_value=100, max_value=32000, value=4096, step=100)
+            
+            if st.form_submit_button("添加模型"):
+                if model_name and model_base_url:
+                    custom_model = {
+                        "name": model_name,
+                        "base_url": model_base_url,
+                        "supports_search": supports_search,
+                        "supports_tools": supports_tools,
+                        "default_params": {
+                            "temperature": temperature,
+                            "max_tokens": max_tokens
+                        }
+                    }
+                    
+                    # 检查是否已存在
+                    existing_names = [m["name"] for m in st.session_state.custom_models]
+                    if model_name not in existing_names:
+                        st.session_state.custom_models.append(custom_model)
+                        st.session_state.config_changed = True
+                        save_config_to_storage()
+                        st.success(f"✅ 已添加自定义模型: {model_name}")
+                        st.rerun()
+                    else:
+                        st.error("❌ 模型名称已存在")
+                else:
+                    st.error("❌ 请填写完整信息")
+        
+        # 显示已添加的自定义模型
+        if st.session_state.custom_models:
+            st.write("已添加的自定义模型:")
+            for i, model in enumerate(st.session_state.custom_models):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.text(f"🔧 {model['name']}")
+                with col2:
+                    if st.button("删除", key=f"del_model_{i}"):
+                        st.session_state.custom_models.pop(i)
+                        st.session_state.config_changed = True
+                        save_config_to_storage()
+                        st.rerun()
+    
+    return main_model
+
+
+def setup_api_key():
+    """设置API密钥和模型选择（保持向后兼容）"""
+    model_name = setup_api_configuration()
+    
+    # 获取API密钥
+    if st.session_state.api_mode == APIMode.OPENAI:
+        api_key = st.session_state.openai_config.get("api_key", "")
+    else:
+        api_key = st.session_state.get("api_key_to_load", "")
     
     if api_key:
         if validate_and_setup_engine(api_key, model_name):
             st.session_state.api_key_validated = True
-            st.sidebar.success("✅ API密钥配置成功")
+            st.sidebar.success("✅ API配置成功")
             
-            # 总是保存有效的API密钥到localStorage（确保持久化）
+            # 保存API密钥到localStorage
+            localS = SafeLocalStorage()
             try:
-                localS.setItem("api_key", api_key)
-                st.session_state.api_key_to_load = api_key # 更新state
-                st.session_state.ls_api_key = api_key # 更新缓存
+                if st.session_state.api_mode != APIMode.OPENAI:
+                    localS.setItem("api_key", api_key)
+                    st.session_state.api_key_to_load = api_key
+                    st.session_state.ls_api_key = api_key
             except Exception as e:
                 st.sidebar.warning(f"⚠️ 保存API密钥失败: {e}")
             
-            # 显示模型配置详情
+            # 显示当前配置详情
             if st.session_state.research_engine:
-                model_config = st.session_state.research_engine.model_config
-                with st.sidebar.expander("📋 模型配置详情", expanded=False):
-                    st.text(f"🔍 搜索: {model_config.search_model}")
-                    st.text(f"📊 分析: {model_config.task_analysis_model}")
-                    st.text(f"🤔 反思: {model_config.reflection_model}")
-                    st.text(f"📝 答案: {model_config.answer_model}")
+                with st.sidebar.expander("📋 当前配置详情", expanded=False):
+                    client_info = st.session_state.research_engine.get_client_info()
+                    
+                    st.text(f"🔄 API模式: {st.session_state.api_mode.value}")
+                    st.text(f"🔍 搜索客户端: {client_info['search_client']['type']}")
+                    st.text(f"🏗️ 工作流客户端: {client_info['workflow_client']['type']}")
+                    
+                    if st.session_state.api_mode == APIMode.OPENAI:
+                        st.text(f"🌐 Base URL: {st.session_state.openai_config['base_url']}")
+                    
+                    st.divider()
+                    st.text("任务模型配置:")
+                    for task_key, model_name in st.session_state.task_models.items():
+                        task_name = TASK_MODEL_MAPPING[task_key]
+                        st.text(f"  {task_name}: {model_name}")
             
             # Debug开关
             st.sidebar.divider()
@@ -400,6 +856,30 @@ def setup_api_key():
                 value=st.session_state.debug_enabled,
                 help="启用后将记录所有API请求和响应到JSON文件，用于调试"
             )
+            
+            # 配置管理
+            st.sidebar.divider()
+            st.sidebar.subheader("⚙️ 配置管理")
+            
+            col1, col2 = st.sidebar.columns(2)
+            
+            with col1:
+                if st.button("📤 导出配置", help="导出当前配置到JSON文件"):
+                    export_config()
+            
+            with col2:
+                if st.button("🔄 重置配置", help="重置所有配置到默认值"):
+                    reset_config()
+            
+            # 配置导入
+            uploaded_config = st.sidebar.file_uploader(
+                "📥 导入配置",
+                type=['json'],
+                help="上传之前导出的配置文件"
+            )
+            
+            if uploaded_config is not None:
+                import_config(uploaded_config)
             
             if debug_enabled != st.session_state.debug_enabled:
                 st.session_state.debug_enabled = debug_enabled

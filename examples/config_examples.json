@@ -1,0 +1,174 @@
+{
+  "default_config": {
+    "api_mode": "genai",
+    "openai_config": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "timeout": 30
+    },
+    "task_models": {
+      "search": "gemini-2.0-flash",
+      "task_analysis": "gemini-2.5-flash-preview-05-20",
+      "reflection": "gemini-2.5-flash-preview-05-20",
+      "answer": "gemini-2.5-pro-preview-06-05"
+    },
+    "custom_models": [],
+    "version": "1.0"
+  },
+  
+  "openai_config": {
+    "api_mode": "openai",
+    "openai_config": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "your-openai-api-key",
+      "timeout": 30
+    },
+    "task_models": {
+      "search": "gpt-4",
+      "task_analysis": "gpt-4",
+      "reflection": "gpt-4",
+      "answer": "gpt-4"
+    },
+    "custom_models": [
+      {
+        "name": "gpt-4",
+        "base_url": "https://api.openai.com/v1",
+        "supports_search": false,
+        "supports_tools": true,
+        "default_params": {
+          "temperature": 0.3,
+          "max_tokens": 4096
+        }
+      }
+    ],
+    "version": "1.0"
+  },
+  
+  "azure_openai_config": {
+    "api_mode": "openai",
+    "openai_config": {
+      "base_url": "https://your-resource.openai.azure.com/openai/deployments/your-deployment/",
+      "api_key": "your-azure-api-key",
+      "timeout": 30
+    },
+    "task_models": {
+      "search": "gpt-4-azure",
+      "task_analysis": "gpt-4-azure",
+      "reflection": "gpt-4-azure",
+      "answer": "gpt-4-azure"
+    },
+    "custom_models": [
+      {
+        "name": "gpt-4-azure",
+        "base_url": "https://your-resource.openai.azure.com/openai/deployments/your-deployment/",
+        "supports_search": false,
+        "supports_tools": true,
+        "default_params": {
+          "temperature": 0.3,
+          "max_tokens": 4096
+        }
+      }
+    ],
+    "version": "1.0"
+  },
+  
+  "ollama_config": {
+    "api_mode": "openai",
+    "openai_config": {
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "ollama",
+      "timeout": 60
+    },
+    "task_models": {
+      "search": "llama2",
+      "task_analysis": "codellama",
+      "reflection": "llama2",
+      "answer": "llama2"
+    },
+    "custom_models": [
+      {
+        "name": "llama2",
+        "base_url": "http://localhost:11434/v1",
+        "supports_search": false,
+        "supports_tools": false,
+        "default_params": {
+          "temperature": 0.7,
+          "max_tokens": 2048
+        }
+      },
+      {
+        "name": "codellama",
+        "base_url": "http://localhost:11434/v1",
+        "supports_search": false,
+        "supports_tools": false,
+        "default_params": {
+          "temperature": 0.3,
+          "max_tokens": 4096
+        }
+      }
+    ],
+    "version": "1.0"
+  },
+  
+  "mixed_mode_config": {
+    "api_mode": "auto",
+    "openai_config": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "your-openai-api-key",
+      "timeout": 30
+    },
+    "task_models": {
+      "search": "gemini-2.0-flash",
+      "task_analysis": "gpt-4",
+      "reflection": "gemini-2.5-flash-preview-05-20",
+      "answer": "gpt-4"
+    },
+    "custom_models": [
+      {
+        "name": "gpt-4",
+        "base_url": "https://api.openai.com/v1",
+        "supports_search": false,
+        "supports_tools": true,
+        "default_params": {
+          "temperature": 0.3,
+          "max_tokens": 4096
+        }
+      }
+    ],
+    "version": "1.0"
+  },
+  
+  "cost_optimized_config": {
+    "api_mode": "genai",
+    "openai_config": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "timeout": 30
+    },
+    "task_models": {
+      "search": "gemini-2.0-flash",
+      "task_analysis": "gemini-2.0-flash",
+      "reflection": "gemini-2.0-flash",
+      "answer": "gemini-2.5-flash-preview-05-20"
+    },
+    "custom_models": [],
+    "version": "1.0"
+  },
+  
+  "high_quality_config": {
+    "api_mode": "genai",
+    "openai_config": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "timeout": 30
+    },
+    "task_models": {
+      "search": "gemini-2.0-flash",
+      "task_analysis": "gemini-2.5-pro-preview-06-05",
+      "reflection": "gemini-2.5-pro-preview-06-05",
+      "answer": "gemini-2.5-pro-preview-06-05"
+    },
+    "custom_models": [],
+    "version": "1.0"
+  }
+} 
