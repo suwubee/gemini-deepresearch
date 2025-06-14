@@ -125,18 +125,24 @@ def display_search_results(research_results):
     st.markdown(f"### 🔍 搜索结果 ({len(search_results)}) ({task_id[:8]})")
     for i, result in enumerate(search_results, 1):
         with st.container():
-            st.markdown(f"**搜索 {i}: {result.query}**")
+            # 使用字典访问方式而不是对象属性访问
+            query = result.get("query", "未知查询") if isinstance(result, dict) else getattr(result, 'query', "未知查询")
+            st.markdown(f"**搜索 {i}: {query}**")
             
-            if result.success:
-                st.success(f"✅ 搜索成功 (耗时: {result.duration:.2f}秒)")
+            success = result.get("success", False) if isinstance(result, dict) else getattr(result, 'success', False)
+            if success:
+                duration = result.get("duration", 0) if isinstance(result, dict) else getattr(result, 'duration', 0)
+                st.success(f"✅ 搜索成功 (耗时: {duration:.2f}秒)")
                 
-                if result.content:
-                    content_preview = result.content[:200] + "..." if len(result.content) > 200 else result.content
+                content = result.get("content", "") if isinstance(result, dict) else getattr(result, 'content', "")
+                if content:
+                    content_preview = content[:200] + "..." if len(content) > 200 else content
                     st.text_area(f"内容预览", content_preview, height=100, disabled=True, key=f"content_{task_id}_{i}")
                 
-                if result.citations:
+                citations = result.get("citations", []) if isinstance(result, dict) else getattr(result, 'citations', [])
+                if citations:
                     st.markdown("**引用来源:**")
-                    citations_list = result.citations or []
+                    citations_list = citations or []
                     for j, citation in enumerate(citations_list[:3]):
                         title = citation.get("title", "未知标题")
                         url = citation.get("url", "#")
@@ -145,7 +151,8 @@ def display_search_results(research_results):
                         else:
                             st.markdown(f"- {url}")
             else:
-                st.error(f"❌ 搜索失败: {result.error}")
+                error = result.get("error", "未知错误") if isinstance(result, dict) else getattr(result, 'error', "未知错误")
+                st.error(f"❌ 搜索失败: {error}")
             
             st.divider()
 
