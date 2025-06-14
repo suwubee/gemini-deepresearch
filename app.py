@@ -109,9 +109,17 @@ def initialize_session_state():
 
     # 尝试从LocalStorage加载API密钥
     try:
-        localS = LocalStorage()
-        initial_api_key = localS.getItem("api_key")
-        if initial_api_key and initial_api_key != "null":
+        if "ls_api_key" not in st.session_state:
+            localS = LocalStorage()
+            initial_api_key = localS.getItem("api_key", key="load_api_key")
+            st.session_state.ls_api_key = initial_api_key
+        else:
+            initial_api_key = st.session_state.ls_api_key
+            
+        if (initial_api_key and 
+            initial_api_key != "null" and 
+            initial_api_key != None and
+            str(initial_api_key).strip() != ""):
             st.session_state.api_key_to_load = initial_api_key
     except Exception:
         pass  # 忽略LocalStorage加载错误
@@ -169,7 +177,7 @@ def setup_api_key():
             
             # 如果是新的有效key，则保存到localStorage
             if api_key != api_key_from_storage:
-                localS.setItem("api_key", api_key)
+                localS.setItem("api_key", api_key, key="save_api_key")
                 st.session_state.api_key_to_load = api_key # 更新state
             
             # 显示模型配置详情
@@ -402,7 +410,7 @@ def research_interface():
                             serializable_results = json_serializable(st.session_state.research_results)
                             # 转换为JSON字符串
                             json_string = json.dumps(serializable_results, ensure_ascii=False)
-                            localS.setItem("research_results", json_string)
+                            localS.setItem("research_results", json_string, key="save_research_results")
                         except Exception as e:
                             st.warning(f"⚠️ 保存历史记录失败: {e}")
 
@@ -568,7 +576,7 @@ def sidebar_content():
         
         # 清除LocalStorage中的研究结果，但保留API key
         localS = LocalStorage()
-        localS.removeItem("research_results")
+        localS.removeItem("research_results", key="clear_research_results")
 
         # 重置所有状态
         keys_to_reset = [
@@ -576,7 +584,7 @@ def sidebar_content():
             "is_researching", "research_complete", "research_error",
             "current_step", "progress_percentage", "research_started",
             "just_completed", "show_markdown_preview", "history_loaded",
-            "first_load_message_shown"
+            "first_load_message_shown", "ls_research_results", "ls_api_key"
         ]
         for key in keys_to_reset:
             if key in st.session_state:
@@ -606,8 +614,24 @@ def main():
     if not st.session_state.history_loaded:
         try:
             localS = LocalStorage()
-            initial_results = localS.getItem("research_results")
-            if initial_results and initial_results != "null" and len(st.session_state.research_results) == 0:
+            
+            # 使用session state缓存LocalStorage的值，避免重复调用
+            if "ls_research_results" not in st.session_state:
+                initial_results = localS.getItem("research_results", key="load_research_results")
+                st.session_state.ls_research_results = initial_results
+                # 调试信息
+                if st.session_state.get("debug_enabled", False):
+                    st.info(f"🔍 从LocalStorage加载: {type(initial_results)} = {str(initial_results)[:100]}...")
+            else:
+                initial_results = st.session_state.ls_research_results
+            
+            # 只有当LocalStorage返回有效数据且当前没有历史记录时才加载
+            if (initial_results and 
+                initial_results != "null" and 
+                initial_results != None and 
+                str(initial_results).strip() != "" and
+                len(st.session_state.research_results) == 0):
+                
                 try:
                     if isinstance(initial_results, str):
                         parsed_results = json.loads(initial_results)
@@ -622,7 +646,10 @@ def main():
                             st.session_state.first_load_message_shown = True
                 except (json.JSONDecodeError, TypeError) as e:
                     st.warning(f"⚠️ 历史记录格式错误，已清空: {e}")
-                    localS.removeItem("research_results")
+                    localS.removeItem("research_results", key="remove_research_results")
+                    # 清除缓存
+                    if "ls_research_results" in st.session_state:
+                        del st.session_state.ls_research_results
             
             st.session_state.history_loaded = True
         except Exception as e:
