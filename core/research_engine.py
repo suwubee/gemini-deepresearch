@@ -265,10 +265,10 @@ class ResearchEngine:
             workflow.config["complexity"] = "Low"
             workflow.config["estimated_steps"] = 3
             workflow.config["estimated_time"] = "1-3分钟"
-            workflow.config["max_search_rounds"] = 1  # 低强度只进行1轮搜索
+            workflow.config["max_search_rounds"] = 2  # 低强度最多2轮搜索（初始+1次补充）
             self.state_manager.update_settings(
                 max_search_results=5,
-                max_iterations=1,
+                max_iterations=2,
                 search_timeout=15
             )
         elif effort_level == "high":
@@ -352,24 +352,36 @@ class ResearchEngine:
         if supplementary_search_step:
             current_round = 1
             while current_round < effective_max_rounds:
-                self._notify_step(f"第 {current_round+1}/{effective_max_rounds} 轮补充研究开始...")
+                # 计算当前轮次的进度
+                base_progress = 60  # 初始搜索完成后的进度
+                round_progress = base_progress + (current_round * 15)  # 每轮增加15%
+                
+                self._notify_step(f"🔄 第 {current_round+1}/{effective_max_rounds} 轮补充研究开始...")
+                self._notify_progress(f"执行第 {current_round+1} 轮补充搜索", round_progress)
                 
                 # 如果分析后认为信息充足，则跳出循环
                 if context.get("is_sufficient"):
-                    self._notify_step("信息已充足，跳过补充研究。")
+                    self._notify_step("✅ 信息已充足，跳过后续补充研究")
                     break
 
-                # 执行补充搜索
+                # 执行补充搜索，传递轮次信息
+                context["current_round"] = current_round + 1
+                context["total_rounds"] = effective_max_rounds
                 result = await self._execute_step_with_context(supplementary_search_step, context)
                 context.update(result)
                 
                 # 再次分析结果
                 analyze_step = next((s for s in workflow.steps if s.name == "analyze_search_results"), None)
                 if analyze_step:
+                    context["search_round"] = current_round  # 传递搜索轮次给分析步骤
                     analysis_result = await self._execute_step_with_context(analyze_step, context)
                     context.update(analysis_result)
 
                 current_round += 1
+            
+            # 如果达到最大轮数但信息仍不充足
+            if current_round >= effective_max_rounds and not context.get("is_sufficient"):
+                self._notify_step(f"⚠️ 已达到最大搜索轮数({effective_max_rounds})，停止补充搜索")
 
         # 循环结束，执行最终的答案生成
         final_answer_step = next((s for s in workflow.steps if s.name == "generate_final_answer"), None)
@@ -434,9 +446,11 @@ class ResearchEngine:
         user_query = kwargs.get("user_query", "")
         search_results = kwargs.get("search_results", [])
         search_round = kwargs.get("search_round", 0)
-        max_search_rounds = kwargs.get("max_search_rounds", 3)
+        current_round = kwargs.get("current_round", search_round + 1)
+        total_rounds = kwargs.get("total_rounds", kwargs.get("max_search_rounds", 3))
         
-        self._notify_step("正在分析搜索结果...")
+        self._notify_step(f"🤔 分析第 {current_round} 轮搜索结果，判断是否需要继续...")
+        self._notify_progress(f"分析第 {current_round} 轮结果", 70 + ((current_round - 1) * 10))
         
         # 获取所有已搜索的内容用于反思分析
         all_research_results = self.state_manager.get_search_content_list()
@@ -447,8 +461,8 @@ class ResearchEngine:
         reflection_prompt = f"""分析以下研究内容，判断是否需要进一步搜索：
 
 研究主题: {user_query}
-当前搜索轮数: {search_round + 1}
-最大搜索轮数: {max_search_rounds}
+当前搜索轮数: {current_round}
+最大搜索轮数: {total_rounds}
 
 已收集的研究内容:
 {chr(10).join(['---' + chr(10) + content for content in all_research_results[-5:]])}
@@ -494,7 +508,7 @@ class ResearchEngine:
                 # 降级处理：简单的长度判断
                 total_content = sum(len(content) for content in all_research_results)
                 reflection_result = {
-                    "is_sufficient": total_content > 2000 or search_round >= max_search_rounds - 1,
+                    "is_sufficient": total_content > 2000 or current_round >= total_rounds,
                     "knowledge_gap": "信息充足" if total_content > 2000 else "需要更多详细信息",
                     "follow_up_queries": [] if total_content > 2000 else [f"{user_query} 详细分析"]
                 }
@@ -520,15 +534,26 @@ class ResearchEngine:
                 # 其他错误的降级处理
                 total_content = sum(len(content) for content in all_research_results)
                 reflection_result = {
-                    "is_sufficient": total_content > 1500 or search_round >= max_search_rounds - 1,
+                    "is_sufficient": total_content > 1500 or current_round >= total_rounds,
                     "knowledge_gap": "分析失败，使用简单判断",
                     "follow_up_queries": [] if total_content > 1500 else [f"{user_query} 补充信息"]
                 }
         
+        # 显示分析结果
+        is_sufficient = reflection_result.get("is_sufficient", False)
+        knowledge_gap = reflection_result.get("knowledge_gap", "")
+        
+        if is_sufficient:
+            self._notify_step(f"✅ 第 {current_round} 轮分析完成：信息充足，准备生成最终答案")
+        else:
+            self._notify_step(f"⚠️ 第 {current_round} 轮分析完成：{knowledge_gap}")
+            if current_round < total_rounds:
+                self._notify_step(f"🔄 将进行第 {current_round + 1} 轮补充搜索")
+        
         # 保存反思分析结果
         reflection_with_metadata = {
             **reflection_result,
-            "search_round": search_round + 1,
+            "search_round": current_round,
             "total_research_content": len(all_research_results),
             "content_analysis": f"已收集 {len(all_research_results)} 个搜索结果"
         }
@@ -536,14 +561,13 @@ class ResearchEngine:
         
         # 如果是API配额耗尽导致的强制终止，标记API错误
         api_error = False
-        knowledge_gap = reflection_result.get("knowledge_gap", "") or ""
         if "配额耗尽" in knowledge_gap:
             api_error = True
         
         return {
             "analysis": reflection_result,
-            "search_round": search_round + 1,
-            "max_search_rounds": max_search_rounds,
+            "current_round": current_round,
+            "total_rounds": total_rounds,
             "api_error": api_error
         }
     
@@ -552,11 +576,12 @@ class ResearchEngine:
         analysis = kwargs.get("analysis", {})
         user_query = kwargs.get("user_query", "")
         search_round = kwargs.get("search_round", 0)
-        max_search_rounds = kwargs.get("max_search_rounds", 3)
+        current_round = kwargs.get("current_round", search_round + 1)  # 获取当前轮次
+        total_rounds = kwargs.get("total_rounds", kwargs.get("max_search_rounds", 3))
         
         # 检查是否需要继续搜索（参考原始backend的evaluate_research逻辑）
-        if analysis.get("is_sufficient", True) or search_round >= max_search_rounds:
-            self._notify_step("信息已充足或达到最大搜索轮数，跳过补充搜索")
+        if analysis.get("is_sufficient", True):
+            self._notify_step("✅ 信息已充足，跳过补充搜索")
             return {"additional_results": [], "continue_search": False}
         
         # 获取follow_up_queries
@@ -564,14 +589,19 @@ class ResearchEngine:
         if not follow_up_queries:
             follow_up_queries = [f"{user_query} 详细分析"]
         
-        self._notify_step(f"正在进行第{search_round}轮补充搜索...")
-        self._notify_progress(f"补充搜索轮次 {search_round}/{max_search_rounds}", 60 + (search_round * 10))
+        self._notify_step(f"🔍 第 {current_round}/{total_rounds} 轮补充搜索中...")
+        
+        # 使用传递的进度信息，而不是重新计算
+        base_progress = 60 + ((current_round - 1) * 15)
+        self._notify_progress(f"第 {current_round} 轮补充搜索", base_progress)
         
         additional_results = []
         
         # 执行所有follow_up_queries（参考原始backend逻辑）
         for i, query in enumerate(follow_up_queries[:2]):  # 限制每轮最多2个查询
-            self._notify_step(f"补充搜索 {i+1}/{len(follow_up_queries[:2])}: {query[:30]}...")
+            query_progress = base_progress + (i * 5)  # 每个查询增加5%进度
+            self._notify_step(f"🔎 补充查询 {i+1}/{len(follow_up_queries[:2])}: {query[:50]}...")
+            self._notify_progress(f"执行补充查询 {i+1}", query_progress)
             
             try:
                 result = await self.search_agent.search_with_grounding(query)
@@ -579,16 +609,17 @@ class ResearchEngine:
                 if result.get("success"):
                     self.state_manager.add_search_result(query, result)
                     
-                    # 保存到分析过程
-                    web_research_content = f"Supplementary Query: {query}\nContent: {result.get('content', '')}"
+                    # 保存到分析过程，标明轮次
+                    web_research_content = f"第{current_round}轮补充查询: {query}\n内容: {result.get('content', '')}"
                     if result.get('citations'):
                         citations_list = result.get('citations', []) or []
                         citations_text = "\n".join([f"- {cite.get('title', 'Unknown Source')}: {cite.get('url', '#')}" 
                                                    for cite in citations_list[:3]])
-                        web_research_content += f"\nCitations:\n{citations_text}"
+                        web_research_content += f"\n引用:\n{citations_text}"
                     self.state_manager.add_web_research_result(web_research_content)
                     
                     additional_results.append(result)
+                    self._notify_step(f"✅ 补充查询 {i+1} 完成")
                     
             except Exception as e:
                 error_str = str(e).lower()
@@ -601,21 +632,23 @@ class ResearchEngine:
                     return {
                         "additional_results": additional_results,
                         "continue_search": False,
-                        "search_round": search_round,
-                        "max_search_rounds": max_search_rounds,
+                        "current_round": current_round,
+                        "total_rounds": total_rounds,
                         "api_error": True
                     }
                 else:
-                    self._notify_step(f"补充搜索失败: {str(e)}")
+                    self._notify_step(f"❌ 补充搜索失败: {str(e)}")
             
             # 添加延迟避免速率限制
             time.sleep(1)
         
+        self._notify_step(f"🎯 第 {current_round} 轮补充搜索完成，共获得 {len(additional_results)} 个结果")
+        
         return {
             "additional_results": additional_results,
             "continue_search": True,
-            "search_round": search_round,
-            "max_search_rounds": max_search_rounds
+            "current_round": current_round,
+            "total_rounds": total_rounds
         }
     
     async def _generate_final_answer_step(self, **kwargs) -> Dict[str, Any]:

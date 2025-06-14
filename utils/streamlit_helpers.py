@@ -140,7 +140,10 @@ def display_search_results(research_results):
                     for j, citation in enumerate(citations_list[:3]):
                         title = citation.get("title", "未知标题")
                         url = citation.get("url", "#")
-                        st.markdown(f"- [{title}]({url})")
+                        if title and title != "未知标题":
+                            st.markdown(f"- [{title}]({url})")
+                        else:
+                            st.markdown(f"- {url}")
             else:
                 st.error(f"❌ 搜索失败: {result.error}")
             
@@ -250,7 +253,11 @@ def display_final_answer(research_results):
                 st.markdown("**引用来源:**")
                 for i, citation in enumerate(citations, 1):
                     url = citation.get("url", "#")
-                    st.markdown(f"**{i}.** {url}")
+                    title = citation.get("title", "未知标题")
+                    if title and title != "未知标题":
+                        st.markdown(f"**{i}.** [{title}]({url})")
+                    else:
+                        st.markdown(f"**{i}.** {url}")
                 st.divider()
             
             if urls:
