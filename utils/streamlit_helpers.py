@@ -1,55 +1,61 @@
 """
-Streamlit 相关的辅助函数
+Streamlit 辅助函数
+用于显示研究结果和界面组件
 """
 
 import streamlit as st
+import json
 from datetime import datetime
 from enum import Enum
 
+
 def json_serializable(obj):
     """将对象转换为JSON可序列化的格式"""
-    if isinstance(obj, Enum):
+    if hasattr(obj, '__dict__'):
+        return obj.__dict__
+    elif isinstance(obj, Enum):
         return obj.value
-    elif isinstance(obj, datetime):
-        return obj.isoformat()
-    elif hasattr(obj, '__dict__'):
-        return {k: json_serializable(v) for k, v in obj.__dict__.items()}
     elif isinstance(obj, (list, tuple)):
         return [json_serializable(item) for item in obj]
     elif isinstance(obj, dict):
-        return {k: json_serializable(v) for k, v in obj.items()}
+        return {key: json_serializable(value) for key, value in obj.items()}
     else:
         return obj
 
 
 def create_markdown_content(research_results):
-    """创建markdown格式的研究内容"""
-    if not research_results or not research_results.get("success"):
-        return "# 研究结果\n\n没有可用的研究结果。"
-    
-    user_query = research_results.get("user_query", "未知查询")
+    """创建Markdown格式的研究报告"""
     final_answer = research_results.get("final_answer", "")
+    user_query = research_results.get("user_query", "")
+    task_id = research_results.get("task_id", "")
     
-    # 构建markdown内容
-    markdown_content = f"""# 🔍 研究报告
-
-## 📋 研究主题
-{user_query}
-
-## 🎯 研究结果
-{final_answer}
-
----
-
-"""
+    markdown_content = f"# 🔍 DeepSearch 研究报告\n\n"
+    markdown_content += f"**研究主题:** {user_query}\n\n"
+    markdown_content += f"**任务ID:** {task_id}\n\n"
+    markdown_content += "---\n\n"
+    
+    # 添加主要研究结果
+    if final_answer:
+        markdown_content += "## 📋 研究结果\n\n"
+        markdown_content += final_answer
+        markdown_content += "\n\n"
     
     # 添加引用来源
     citations = research_results.get("citations", [])
     if citations:
         markdown_content += "## 📚 引用来源\n\n"
-        for i, citation in enumerate(citations[:10], 1):
+        for i, citation in enumerate(citations, 1):
             url = citation.get("url", "#")
-            markdown_content += f"{i}. {url}\n"
+            title = citation.get("title", "未知标题")
+            markdown_content += f"{i}. [{title}]({url})\n"
+        markdown_content += "\n"
+    
+    # 添加相关链接
+    urls = research_results.get("urls", [])
+    if urls:
+        markdown_content += "## 🔗 相关链接\n\n"
+        for url in urls[:10]:
+            markdown_content += f"- {url}\n"
         markdown_content += "\n"
     
     # 添加搜索统计
@@ -89,21 +95,21 @@ def display_task_analysis(workflow_analysis, task_id):
     if not workflow_analysis:
         return
     
-    with st.expander(f"📊 任务分析结果 ({task_id[:8]})", expanded=False):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.metric("任务类型", workflow_analysis.task_type)
-            st.metric("复杂度", workflow_analysis.complexity)
-            st.metric("预估步骤", workflow_analysis.estimated_steps)
-        
-        with col2:
-            st.metric("需要搜索", "是" if workflow_analysis.requires_search else "否")
-            st.metric("多轮搜索", "是" if workflow_analysis.requires_multiple_rounds else "否")
-            st.metric("预估时间", workflow_analysis.estimated_time)
-        
-        if workflow_analysis.reasoning:
-            st.text_area("分析推理", workflow_analysis.reasoning, height=100, disabled=True, key=f"reasoning_{task_id}")
+    st.markdown(f"### 📊 任务分析结果 ({task_id[:8]})")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.metric("任务类型", workflow_analysis.task_type)
+        st.metric("复杂度", workflow_analysis.complexity)
+        st.metric("预估步骤", workflow_analysis.estimated_steps)
+    
+    with col2:
+        st.metric("需要搜索", "是" if workflow_analysis.requires_search else "否")
+        st.metric("多轮搜索", "是" if workflow_analysis.requires_multiple_rounds else "否")
+        st.metric("预估时间", workflow_analysis.estimated_time)
+    
+    if workflow_analysis.reasoning:
+        st.text_area("分析推理", workflow_analysis.reasoning, height=100, disabled=True, key=f"reasoning_{task_id}")
 
 
 def display_search_results(research_results):
@@ -114,29 +120,29 @@ def display_search_results(research_results):
     search_results = research_results["search_results"]
     task_id = research_results.get("task_id", "default")
     
-    with st.expander(f"🔍 搜索结果 ({len(search_results)}) ({task_id[:8]})", expanded=False):
-        for i, result in enumerate(search_results, 1):
-            with st.container():
-                st.markdown(f"**搜索 {i}: {result.query}**")
+    st.markdown(f"### 🔍 搜索结果 ({len(search_results)}) ({task_id[:8]})")
+    for i, result in enumerate(search_results, 1):
+        with st.container():
+            st.markdown(f"**搜索 {i}: {result.query}**")
+            
+            if result.success:
+                st.success(f"✅ 搜索成功 (耗时: {result.duration:.2f}秒)")
                 
-                if result.success:
-                    st.success(f"✅ 搜索成功 (耗时: {result.duration:.2f}秒)")
-                    
-                    if result.content:
-                        content_preview = result.content[:200] + "..." if len(result.content) > 200 else result.content
-                        st.text_area(f"内容预览", content_preview, height=100, disabled=True, key=f"content_{task_id}_{i}")
-                    
-                    if result.citations:
-                        st.markdown("**引用来源:**")
-                        citations_list = result.citations or []
-                        for j, citation in enumerate(citations_list[:3]):
-                            title = citation.get("title", "未知标题")
-                            url = citation.get("url", "#")
-                            st.markdown(f"- [{title}]({url})")
-                else:
-                    st.error(f"❌ 搜索失败: {result.error}")
+                if result.content:
+                    content_preview = result.content[:200] + "..." if len(result.content) > 200 else result.content
+                    st.text_area(f"内容预览", content_preview, height=100, disabled=True, key=f"content_{task_id}_{i}")
                 
-                st.divider()
+                if result.citations:
+                    st.markdown("**引用来源:**")
+                    citations_list = result.citations or []
+                    for j, citation in enumerate(citations_list[:3]):
+                        title = citation.get("title", "未知标题")
+                        url = citation.get("url", "#")
+                        st.markdown(f"- [{title}]({url})")
+            else:
+                st.error(f"❌ 搜索失败: {result.error}")
+            
+            st.divider()
 
 
 def display_final_answer(research_results):
@@ -183,70 +189,70 @@ def display_final_answer(research_results):
         
         # 显示分析过程（参考原始backend结构）
         if analysis_process:
-            with st.expander(f"🔬 分析过程 ({task_id[:8]})", expanded=False):
-                # 使用tabs来避免嵌套expander问题
-                tab1, tab2, tab3, tab4 = st.tabs([
-                    f"搜索查询_{task_id}", 
-                    f"搜索结果_{task_id}", 
-                    f"分析反思_{task_id}", 
-                    f"统计信息_{task_id}"
-                ])
-                
-                with tab1:
-                    # 显示搜索查询
-                    search_queries = analysis_process.get("search_queries", [])
-                    if search_queries:
-                        st.markdown("**搜索查询:**")
-                        for i, query in enumerate(search_queries, 1):
-                            st.markdown(f"{i}. {query}")
-                    else:
-                        st.info("暂无搜索查询记录")
-                
-                with tab2:
-                    # 显示网络搜索结果
-                    web_research_results = analysis_process.get("web_research_results", [])
-                    if web_research_results:
-                        st.markdown("**网络搜索结果:**")
-                        for i, result in enumerate(web_research_results, 1):
-                            st.markdown(f"**搜索结果 {i}:**")
-                            # 使用代码块显示而不是嵌套expander
-                            st.code(result, language=None)
-                            st.divider()
-                    else:
-                        st.info("暂无搜索结果记录")
-                
-                with tab3:
-                    # 显示反思分析
-                    reflection_results = analysis_process.get("reflection_results", [])
-                    if reflection_results:
-                        st.markdown("**分析反思:**")
-                        for i, reflection in enumerate(reflection_results, 1):
-                            st.markdown(f"**分析 {i}:**")
-                            st.json(reflection)
-                            st.divider()
-                    else:
-                        st.info("暂无分析反思记录")
-                
-                with tab4:
-                    # 显示统计信息
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("搜索结果数", analysis_process.get("search_results_count", 0))
-                    with col2:
-                        st.metric("成功搜索数", analysis_process.get("successful_searches", 0))
+            # 使用容器和tabs来避免嵌套expander问题
+            st.markdown(f"### 🔬 分析过程 ({task_id[:8]})")
+            tab1, tab2, tab3, tab4 = st.tabs([
+                "搜索查询", 
+                "搜索结果", 
+                "分析反思", 
+                "统计信息"
+            ])
+            
+            with tab1:
+                # 显示搜索查询
+                search_queries = analysis_process.get("search_queries", [])
+                if search_queries:
+                    st.markdown("**搜索查询:**")
+                    for i, query in enumerate(search_queries, 1):
+                        st.markdown(f"{i}. {query}")
+                else:
+                    st.info("暂无搜索查询记录")
+            
+            with tab2:
+                # 显示网络搜索结果
+                web_research_results = analysis_process.get("web_research_results", [])
+                if web_research_results:
+                    st.markdown("**网络搜索结果:**")
+                    for i, result in enumerate(web_research_results, 1):
+                        st.markdown(f"**搜索结果 {i}:**")
+                        # 使用代码块显示而不是嵌套expander
+                        st.code(result, language=None)
+                        st.divider()
+                else:
+                    st.info("暂无搜索结果记录")
+            
+            with tab3:
+                # 显示反思分析
+                reflection_results = analysis_process.get("reflection_results", [])
+                if reflection_results:
+                    st.markdown("**分析反思:**")
+                    for i, reflection in enumerate(reflection_results, 1):
+                        st.markdown(f"**分析 {i}:**")
+                        st.json(reflection)
+                        st.divider()
+                else:
+                    st.info("暂无分析反思记录")
+            
+            with tab4:
+                # 显示统计信息
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("搜索结果数", analysis_process.get("search_results_count", 0))
+                with col2:
+                    st.metric("成功搜索数", analysis_process.get("successful_searches", 0))
         
         # 引用和来源
         if citations or urls:
-            with st.expander(f"📚 引用和来源 ({task_id[:8]})", expanded=False):
-                if citations:
-                    st.markdown("**引用来源:**")
-                    for i, citation in enumerate(citations, 1):
-                        url = citation.get("url", "#")
-                        st.markdown(f"**{i}.** {url}")
-                        st.divider()
-                
-                if urls:
-                    st.markdown("**相关链接:**")
-                    urls_list = urls or []
-                    for url in urls_list[:10]:
-                        st.markdown(f"- {url}") 
+            st.markdown(f"### 📚 引用和来源 ({task_id[:8]})")
+            if citations:
+                st.markdown("**引用来源:**")
+                for i, citation in enumerate(citations, 1):
+                    url = citation.get("url", "#")
+                    st.markdown(f"**{i}.** {url}")
+                st.divider()
+            
+            if urls:
+                st.markdown("**相关链接:**")
+                urls_list = urls or []
+                for url in urls_list[:10]:
+                    st.markdown(f"- {url}") 

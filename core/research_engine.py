@@ -265,6 +265,7 @@ class ResearchEngine:
             workflow.config["complexity"] = "Low"
             workflow.config["estimated_steps"] = 3
             workflow.config["estimated_time"] = "1-3分钟"
+            workflow.config["max_search_rounds"] = 1  # 低强度只进行1轮搜索
             self.state_manager.update_settings(
                 max_search_results=5,
                 max_iterations=1,
@@ -274,6 +275,7 @@ class ResearchEngine:
             workflow.config["complexity"] = "High"  
             workflow.config["estimated_steps"] = 7
             workflow.config["estimated_time"] = "5-15分钟"
+            workflow.config["max_search_rounds"] = 10  # 高强度最多10轮搜索
             self.state_manager.update_settings(
                 max_search_results=20,
                 max_iterations=10,
@@ -283,13 +285,14 @@ class ResearchEngine:
             workflow.config["complexity"] = "Medium"
             workflow.config["estimated_steps"] = 5
             workflow.config["estimated_time"] = "3-8分钟"
+            workflow.config["max_search_rounds"] = 3  # 中等强度最多3轮搜索
             self.state_manager.update_settings(
                 max_search_results=10,
                 max_iterations=3,
                 search_timeout=30
             )
         
-        print(f"🎯 用户effort级别: {effort_level} → 复杂度: {workflow.config['complexity']}")
+        print(f"🎯 用户effort级别: {effort_level} → 复杂度: {workflow.config['complexity']}, 最大搜索轮数: {workflow.config['max_search_rounds']}")
     
     def _inject_research_functions(self, workflow: DynamicWorkflow):
         """将实际的研究函数注入到工作流步骤中"""
@@ -323,10 +326,15 @@ class ResearchEngine:
                                user_query: str, max_search_rounds: int) -> Dict[str, Any]:
         """执行工作流，包含可能的多轮研究"""
         
+        # 使用工作流配置中的max_search_rounds，如果没有则使用传入的参数
+        effective_max_rounds = workflow.config.get("max_search_rounds", max_search_rounds)
+        
         context = {
             "user_query": user_query,
-            "max_search_rounds": max_search_rounds
+            "max_search_rounds": effective_max_rounds
         }
+        
+        print(f"🔄 执行工作流，最大搜索轮数: {effective_max_rounds}")
 
         # 执行初始步骤，直到需要循环的"补充搜索"或"最终答案"
         for step in workflow.steps:
@@ -340,8 +348,8 @@ class ResearchEngine:
         supplementary_search_step = next((s for s in workflow.steps if s.name == "supplementary_search"), None)
         if supplementary_search_step:
             current_round = 1
-            while current_round < max_search_rounds:
-                self._notify_step(f"第 {current_round+1}/{max_search_rounds} 轮补充研究开始...")
+            while current_round < effective_max_rounds:
+                self._notify_step(f"第 {current_round+1}/{effective_max_rounds} 轮补充研究开始...")
                 
                 # 如果分析后认为信息充足，则跳出循环
                 if context.get("is_sufficient"):

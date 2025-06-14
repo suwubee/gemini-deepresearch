@@ -258,7 +258,7 @@ class DynamicWorkflowBuilder:
         steps_config = self._create_workflow_steps(analysis)
         
         workflow = DynamicWorkflow(
-            config=analysis,
+            workflow_config=analysis,
             steps_config=steps_config  # 保存步骤配置，而不是实例
         )
         
