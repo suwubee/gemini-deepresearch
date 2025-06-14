@@ -335,7 +335,7 @@ class ResearchEngine:
         }
         
         print(f"🔄 执行工作流，最大搜索轮数: {effective_max_rounds}")
-
+        
         # 执行初始步骤，直到需要循环的"补充搜索"或"最终答案"
         for step in workflow.steps:
             if step.name == "supplementary_search":
@@ -346,7 +346,7 @@ class ResearchEngine:
             
             result = await self._execute_step_with_context(step, context)
             context.update(result)
-
+            
         # 如果定义了补充搜索，则进入循环
         supplementary_search_step = next((s for s in workflow.steps if s.name == "supplementary_search"), None)
         if supplementary_search_step:
@@ -362,8 +362,8 @@ class ResearchEngine:
                 # 如果分析后认为信息充足，则跳出循环
                 if context.get("is_sufficient"):
                     self._notify_step("✅ 信息已充足，跳过后续补充研究")
-                    break
-
+                break
+            
                 # 执行补充搜索，传递轮次信息
                 context["current_round"] = current_round + 1
                 context["total_rounds"] = effective_max_rounds
@@ -390,7 +390,7 @@ class ResearchEngine:
             context.update(final_result)
         else:
             raise ValueError("工作流中未定义 'generate_final_answer' 步骤")
-
+        
         return context
     
     async def _execute_step_with_context(self, step: WorkflowStep, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -689,7 +689,7 @@ class ResearchEngine:
         
         # 在调用模型之前再次通知，让用户知道正在进行耗时操作
         self._notify_step(f"调用最终模型({self.model_config.answer_model})生成报告，请耐心等待...")
-
+        
         try:
             # 使用SearchAgent的客户端来生成答案，但使用answer_model
             if self.search_agent.client:

@@ -97,10 +97,10 @@ def initialize_session_state():
         "model_name": "gemini-2.0-flash",
         "research_complete": False,
         "research_error": None,
-        "research_started": False,  # 添加执行标记
-        "just_completed": False,    # 刚刚完成标记
-        "debug_enabled": False,     # debug模式开关
-        "show_markdown_preview": False  # markdown预览开关
+        "research_started": False,
+        "just_completed": False,
+        "debug_enabled": False,
+        "show_markdown_preview": False
     }
     
     for key, default_value in defaults.items():
@@ -120,11 +120,9 @@ def initialize_session_state():
         initial_results = localS.getItem("research_results")
         if initial_results and initial_results.get("value"):
             try:
-                # 确保加载的数据是列表格式
                 loaded_results = initial_results["value"]
                 if isinstance(loaded_results, list) and loaded_results:
                     st.session_state.research_results = loaded_results
-                    # 只在debug模式下显示加载信息
                     if st.session_state.get("debug_enabled", False):
                         st.success(f"✅ 已加载 {len(loaded_results)} 条研究历史记录")
             except Exception as e:
@@ -135,7 +133,6 @@ def initialize_session_state():
     except Exception as e:
         if st.session_state.get("debug_enabled", False):
             st.error(f"从LocalStorage加载数据失败: {e}")
-        # 确保有默认值
         if "research_results" not in st.session_state:
             st.session_state.research_results = []
 
@@ -194,7 +191,7 @@ def setup_api_key():
             if api_key != api_key_from_storage:
                 try:
                     localS.setItem("api_key", api_key)
-                    st.session_state.api_key_to_load = api_key # 更新state
+                    st.session_state.api_key_to_load = api_key
                     st.sidebar.info("🔐 API密钥已保存到浏览器")
                 except Exception as e:
                     st.sidebar.warning(f"保存API密钥失败: {e}")
@@ -233,7 +230,6 @@ def setup_api_key():
                 if debug_logger.current_session:
                     st.sidebar.text(f"📝 会话ID: {debug_logger.current_session}")
                     
-                    # 显示会话摘要
                     summary = debug_logger.get_session_summary()
                     if summary:
                         with st.sidebar.expander("📊 Debug统计", expanded=False):
@@ -241,7 +237,6 @@ def setup_api_key():
                             st.metric("搜索次数", summary.get("total_searches", 0))
                             st.metric("错误数量", summary.get("total_errors", 0))
                     
-                    # 立即保存按钮
                     if st.sidebar.button("💾 保存Debug日志"):
                         debug_logger.save_now()
                         st.sidebar.success("✅ Debug日志已保存")
@@ -285,7 +280,7 @@ def run_research_in_background(
         # 为这个线程创建一个新的事件循环
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
+        
         def progress_callback(message, percentage):
             if stop_event.is_set():
                 engine.stop_research()
@@ -315,19 +310,18 @@ def run_research_in_background(
             engine.research(user_query, max_search_rounds, effort_level)
         )
         q.put({"type": "result", "data": results})
-
+        
     except Exception as e:
         if "用户请求停止" not in str(e):
             error_msg = f"研究过程中发生严重错误: {str(e)}"
             q.put({"type": "error", "message": error_msg})
-        # 如果是用户停止，回调中已经处理了，这里不需要重复发送消息
 
 
 def research_interface():
     """研究主界面"""
     st.title("🔍 DeepSearch - 智能深度研究助手")
     st.markdown("### 智能深度研究助手")
-
+    
     # 初始化线程池执行器
     if "executor" not in st.session_state:
         st.session_state.executor = ThreadPoolExecutor(max_workers=1)
@@ -453,12 +447,11 @@ def research_interface():
                     st.session_state.research_results.append(item["data"])
                     st.session_state.just_completed = True
                     
-                    # 保存到LocalStorage - 修复序列化问题
+                    # 保存到LocalStorage
                     try:
                         localS = LocalStorage()
                         serializable_results = json_serializable(st.session_state.research_results)
                         localS.setItem("research_results", serializable_results)
-                        # 只在debug模式下显示保存信息
                         if st.session_state.get("debug_enabled", False):
                             task_id = item["data"].get("task_id", "未知")
                             st.write(f"🐛 调试信息 - task_id: '{task_id}', 长度: {len(str(task_id))}")
@@ -469,7 +462,7 @@ def research_interface():
                 elif item["type"] == "error":
                     st.session_state.is_researching = False
                     st.session_state.research_error = item["message"]
-                elif item["type"] == "info": # 用于处理用户停止等情况
+                elif item["type"] == "info":
                     st.session_state.is_researching = False
                     st.info(item["message"])
 
@@ -488,12 +481,9 @@ def research_interface():
                 if future and future.done():
                     # 任务已结束，但队列中没有消息，说明可能发生意外
                     try:
-                        # 尝试获取结果，这会重新引发在线程中发生的任何异常
                         future.result() 
-                        # 如果没有异常，但走到了这里，说明逻辑有问题
                         st.session_state.research_error = "研究意外终止，但未报告明确错误。"
                     except Exception as e:
-                        # 捕获到后台任务的异常
                         st.session_state.research_error = f"研究任务在后台发生错误: {e}"
                     
                     st.session_state.is_researching = False
@@ -508,7 +498,7 @@ def research_interface():
         # 如果是刚刚完成，显示一个成功的提示
         if st.session_state.just_completed:
             st.success("🎉 研究完成！")
-            st.session_state.just_completed = False # 重置标记，避免重复显示
+            st.session_state.just_completed = False
 
         st.markdown("---")
         st.subheader("📜 研究历史记录")
@@ -592,7 +582,7 @@ def sidebar_content():
         GEMINI_API_KEY = "your_api_key_here"
         ```
         """)
-        return # 如果没有有效API密钥，则不显示侧边栏的其余部分
+        return
 
     st.sidebar.divider()
     
@@ -626,8 +616,6 @@ def sidebar_content():
         try:
             localS = LocalStorage()
             localS.removeItem("research_results")
-            # 不清除API密钥，让用户保持登录状态
-            # localS.removeItem("api_key")
             st.sidebar.info("🗑️ 浏览器缓存已清除")
         except Exception as e:
             st.sidebar.warning(f"清除浏览器缓存失败: {e}")
