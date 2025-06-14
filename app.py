@@ -435,7 +435,7 @@ def research_interface():
     with col2:
         # 根据强度显示配置信息
         effort_configs = {
-            "low": {"rounds": 1, "queries": 3, "time": "1-3分钟"},
+            "low": {"rounds": "1轮(最多3轮)", "queries": 3, "time": "1-5分钟"},
             "medium": {"rounds": 3, "queries": 5, "time": "4-10分钟"},
             "high": {"rounds": 5, "queries": 10, "time": "8-20分钟"}
         }
@@ -449,12 +449,13 @@ def research_interface():
         """)
         
         # 设置默认值，但允许用户在高级设置中覆盖
-        max_search_rounds = config['rounds']
+        default_max_rounds = {"low": 3, "medium": 3, "high": 5}[effort_level]
+        max_search_rounds = default_max_rounds
         num_search_queries = config['queries']
         
         with st.expander("⚙️ 高级设置", expanded=False):
             max_search_rounds = st.slider(
-                "自定义最大搜索轮数", 1, 10, config['rounds'],
+                "自定义最大搜索轮数", 1, 10, default_max_rounds,
                 help="覆盖默认的搜索轮数设置",
                 disabled=st.session_state.is_researching
             )
@@ -464,6 +465,8 @@ def research_interface():
                 help="覆盖默认的每轮查询数量",
                 disabled=st.session_state.is_researching
             )
+            
+            st.info(f"💡 **说明**: 低强度默认1轮搜索，信息不足时自动补充，最多3轮")
     
     # 开始/停止研究按钮
     if not st.session_state.is_researching:
