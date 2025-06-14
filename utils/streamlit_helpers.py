@@ -85,12 +85,12 @@ def create_markdown_content(research_results):
     return markdown_content
 
 
-def display_task_analysis(workflow_analysis):
+def display_task_analysis(workflow_analysis, task_id):
     """显示任务分析结果"""
     if not workflow_analysis:
         return
     
-    with st.expander("📊 任务分析结果", expanded=True):
+    with st.expander("📊 任务分析结果", expanded=False):
         col1, col2 = st.columns(2)
         
         with col1:
@@ -104,7 +104,7 @@ def display_task_analysis(workflow_analysis):
             st.metric("预估时间", workflow_analysis.estimated_time)
         
         if workflow_analysis.reasoning:
-            st.text_area("分析推理", workflow_analysis.reasoning, height=100, disabled=True)
+            st.text_area("分析推理", workflow_analysis.reasoning, height=100, disabled=True, key=f"reasoning_{task_id}")
 
 
 def display_search_results(research_results):
@@ -113,8 +113,9 @@ def display_search_results(research_results):
         return
     
     search_results = research_results["search_results"]
+    task_id = research_results.get("task_id", "default")
     
-    with st.expander(f"🔍 搜索结果 ({len(search_results)})", expanded=False):
+    with st.expander(f"🔍 搜索结果 ({len(search_results)})", expanded=False, key=f"search_results_{task_id}"):
         for i, result in enumerate(search_results, 1):
             with st.container():
                 st.markdown(f"**搜索 {i}: {result.query}**")
@@ -124,7 +125,7 @@ def display_search_results(research_results):
                     
                     if result.content:
                         content_preview = result.content[:200] + "..." if len(result.content) > 200 else result.content
-                        st.text_area(f"内容预览", content_preview, height=100, disabled=True, key=f"content_{i}")
+                        st.text_area(f"内容预览", content_preview, height=100, disabled=True, key=f"content_{task_id}_{i}")
                     
                     if result.citations:
                         st.markdown("**引用来源:**")
@@ -142,41 +143,31 @@ def display_search_results(research_results):
 def display_final_answer(research_results):
     """显示最终答案"""
     final_answer = research_results.get("final_answer", "")
+    task_id = research_results.get("task_id", "default")
     
     if final_answer:
         # 添加标题和操作按钮行
-        col1, col2, col3 = st.columns([3, 1, 1])
+        col1, col2 = st.columns([5, 1])
         
         with col1:
             st.markdown("### 🎯 研究结果")
         
+        # 切换显示markdown内容的会话状态
+        if f"show_markdown_{task_id}" not in st.session_state:
+            st.session_state[f"show_markdown_{task_id}"] = False
+
         with col2:
-            # 复制markdown按钮
-            if st.button("📋 复制Markdown", help="复制研究结果的markdown格式到剪贴板"):
-                try:
-                    markdown_content = create_markdown_content(research_results)
-                    # 使用streamlit的内置功能来复制到剪贴板
-                    st.code(markdown_content, language="markdown")
-                    st.success("✅ Markdown内容已生成，请手动复制上方代码块中的内容")
-                except Exception as e:
-                    st.error(f"❌ 生成Markdown失败: {str(e)}")
-        
-        with col3:
-            # 查看markdown预览按钮
-            if st.button("👁️ 预览Markdown", help="查看完整的markdown格式预览"):
-                st.session_state.show_markdown_preview = not st.session_state.get("show_markdown_preview", False)
-        
-        # 显示markdown预览（如果启用）
-        if st.session_state.get("show_markdown_preview", False):
-            with st.expander("📄 Markdown预览", expanded=True):
-                try:
-                    markdown_content = create_markdown_content(research_results)
-                    st.markdown("**生成的Markdown内容：**")
-                    st.code(markdown_content, language="markdown")
-                    st.markdown("**渲染效果预览：**")
-                    st.markdown(markdown_content)
-                except Exception as e:
-                    st.error(f"❌ 预览失败: {str(e)}")
+            if st.button("📋 复制报告", help="生成完整的Markdown报告以供复制", key=f"copy_md_{task_id}"):
+                st.session_state[f"show_markdown_{task_id}"] = not st.session_state[f"show_markdown_{task_id}"]
+
+        # 根据状态显示或隐藏markdown预览
+        if st.session_state.get(f"show_markdown_{task_id}", False):
+            try:
+                markdown_content = create_markdown_content(research_results)
+                st.code(markdown_content, language="markdown")
+                st.success("✅ Markdown报告已生成，请从上方复制代码块中的内容。")
+            except Exception as e:
+                st.error(f"❌ 生成Markdown失败: {str(e)}")
         
         # 显示主要研究结果
         st.markdown(final_answer)
@@ -193,7 +184,7 @@ def display_final_answer(research_results):
         
         # 显示分析过程（参考原始backend结构）
         if analysis_process:
-            with st.expander("🔬 分析过程", expanded=False):
+            with st.expander("🔬 分析过程", expanded=False, key=f"analysis_{task_id}"):
                 # 使用tabs来避免嵌套expander问题
                 tab1, tab2, tab3, tab4 = st.tabs(["搜索查询", "搜索结果", "分析反思", "统计信息"])
                 
@@ -242,7 +233,7 @@ def display_final_answer(research_results):
         
         # 引用和来源
         if citations or urls:
-            with st.expander("📚 引用和来源", expanded=False):
+            with st.expander("📚 引用和来源", expanded=False, key=f"citations_{task_id}"):
                 if citations:
                     st.markdown("**引用来源:**")
                     for i, citation in enumerate(citations, 1):

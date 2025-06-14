@@ -14,6 +14,8 @@ from typing import Dict, Any
 from enum import Enum
 import queue
 
+from streamlit_local_storage import LocalStorage
+
 # 导入核心组件
 from core.research_engine import ResearchEngine
 from core.state_manager import TaskStatus
@@ -105,6 +107,16 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
+    # 尝试从LocalStorage加载数据
+    localS = LocalStorage()
+    initial_api_key = localS.getItem("api_key")
+    if initial_api_key:
+        st.session_state.api_key_to_load = initial_api_key.get("value")
+
+    initial_results = localS.getItem("research_results")
+    if initial_results:
+        st.session_state.research_results = initial_results.get("value", [])
+
 
 def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
     """验证API密钥并设置引擎"""
@@ -129,6 +141,8 @@ def setup_api_key():
     """设置API密钥和模型选择"""
     st.sidebar.header("🔧 配置")
     
+    localS = LocalStorage()
+
     # 模型选择
     model_name = st.sidebar.selectbox(
         "选择模型",
@@ -138,30 +152,26 @@ def setup_api_key():
         help="选择要使用的Gemini模型版本"
     )
     
-    # 尝试从secrets获取API密钥
-    api_key = ""
-    try:
-        api_key = st.secrets.get("GEMINI_API_KEY", "")
-    except:
-        pass
-    
+    # 优先使用 state 中预加载的 key
+    api_key_from_storage = st.session_state.get("api_key_to_load")
+
     # 如果没有从secrets获取到，让用户输入
-    if not api_key:
-        api_key = st.sidebar.text_input(
-            "Gemini API Key",
-            type="password",
-            help="请输入您的 Google Gemini API 密钥"
-        )
-    else:
-        st.sidebar.success("✅ 已从配置文件加载API密钥")
-        masked_key = api_key[:8] + "*" * max(0, len(api_key) - 12) + api_key[-4:] if len(api_key) > 12 else api_key
-        st.sidebar.text(f"当前密钥: {masked_key}")
+    api_key = st.sidebar.text_input(
+        "Gemini API Key",
+        type="password",
+        value=api_key_from_storage or "",
+        help="请输入您的 Google Gemini API 密钥"
+    )
     
     if api_key:
         if validate_and_setup_engine(api_key, model_name):
             st.session_state.api_key_validated = True
-            st.sidebar.success("✅ API密钥验证成功")
-            st.sidebar.info(f"🤖 用户选择模型: {AVAILABLE_MODELS[model_name]}")
+            st.sidebar.success("✅ API密钥配置成功")
+            
+            # 如果是新的有效key，则保存到localStorage
+            if api_key != api_key_from_storage:
+                localS.setItem("api_key", api_key)
+                st.session_state.api_key_to_load = api_key # 更新state
             
             # 显示模型配置详情
             if st.session_state.research_engine:
@@ -386,6 +396,11 @@ def research_interface():
                         st.session_state.current_task = item["data"]
                         st.session_state.research_results.append(item["data"])
                         st.session_state.just_completed = True
+                        
+                        # 保存到LocalStorage
+                        localS = LocalStorage()
+                        localS.setItem("research_results", st.session_state.research_results)
+
                     elif item["type"] == "error":
                         st.session_state.is_researching = False
                         st.session_state.research_error = item["message"]
@@ -413,7 +428,7 @@ def research_interface():
                 st.success("🎉 研究完成！")
                 display_final_answer(result)
                 display_search_results(result)
-                display_task_analysis(result.get("workflow_analysis"))
+                display_task_analysis(result.get("workflow_analysis"), result.get("task_id"))
             else:
                 st.error(f"研究失败: {result.get('error', '未知错误')}")
         
@@ -422,11 +437,11 @@ def research_interface():
         st.markdown("---")
         st.subheader("📜 研究历史记录")
         for i, result in enumerate(reversed(st.session_state.research_results)):
-            with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", expanded=(i==0)):
+            with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", expanded=(i==0), key=f"history_{result.get('task_id', i)}"):
                 if result.get("success"):
                     display_final_answer(result)
                     display_search_results(result)
-                    display_task_analysis(result.get("workflow_analysis"))
+                    display_task_analysis(result.get("workflow_analysis"), result.get("task_id"))
                 else:
                     st.error(f"研究失败: {result.get('error', '未知错误')}")
 
@@ -435,106 +450,51 @@ def research_interface():
         st.error(f"❌ 研究失败: {st.session_state.research_error}")
 
 
+def export_results():
+    """导出研究结果"""
+    if not st.session_state.research_results:
+        st.sidebar.warning("没有可导出的研究结果。")
+        return
+
+    st.sidebar.subheader("📤 导出结果")
+
+    # 默认导出最近一次的结果
+    latest_result = st.session_state.research_results[-1]
+    
+    try:
+        # 使用 json_serializable 处理枚举等特殊类型
+        json_data = json.dumps(json_serializable(latest_result), indent=4, ensure_ascii=False)
+        
+        task_id = latest_result.get("task_id", "research_results")
+        file_name = f"{task_id}.json"
+
+        st.sidebar.download_button(
+            label="📥 下载JSON格式结果",
+            data=json_data,
+            file_name=file_name,
+            mime="application/json",
+            help="将最近一次的研究结果导出为JSON文件"
+        )
+
+        markdown_content = create_markdown_content(latest_result)
+        md_file_name = f"{task_id}.md"
+
+        st.sidebar.download_button(
+            label="📝 下载Markdown格式报告",
+            data=markdown_content,
+            file_name=md_file_name,
+            mime="text/markdown",
+            help="将最近一次的研究结果导出为Markdown文件"
+        )
+    except Exception as e:
+        st.sidebar.error(f"导出失败: {e}")
+
+
 def sidebar_content():
     """侧边栏内容"""
-    st.sidebar.markdown("### 📊 会话统计")
-    
-    if st.session_state.research_engine:
-        stats = st.session_state.research_engine.state_manager.get_session_statistics()
-        
-        st.sidebar.metric("总任务数", stats.get("total_tasks", 0))
-        st.sidebar.metric("成功任务", stats.get("successful_tasks", 0))
-        st.sidebar.metric("总搜索次数", stats.get("total_searches", 0))
-        
-        session_duration = stats.get("session_duration", 0)
-        st.sidebar.metric("会话时长", f"{session_duration/60:.1f}分钟")
-    
-    # 历史研究结果
-    if st.session_state.research_results:
-        st.sidebar.markdown("### 📚 历史结果")
-        
-        for i, result in enumerate(reversed(st.session_state.research_results[-5:]), 1):
-            with st.sidebar.expander(f"研究 {len(st.session_state.research_results) - i + 1}"):
-                query = result.get("user_query", "")
-                query_preview = query[:50] + "..." if len(query) > 50 else query
-                st.text(query_preview)
-                
-                if result.get("success"):
-                    st.success("✅ 成功")
-                else:
-                    st.error("❌ 失败")
-    
-    # 清空会话按钮
-    if st.sidebar.button("🗑️ 清空会话", disabled=st.session_state.is_researching):
-        if st.session_state.research_engine:
-            st.session_state.research_engine.clear_session()
-        
-        # 重置所有状态
-        for key in ["research_results", "current_task", "progress_messages"]:
-            if key in st.session_state:
-                if isinstance(st.session_state[key], list):
-                    st.session_state[key] = []
-                else:
-                    st.session_state[key] = None
-        
-        st.session_state.is_researching = False
-        st.session_state.research_complete = False
-        st.session_state.research_error = None
-        st.session_state.current_step = ""
-        st.session_state.progress_percentage = 0
-        st.session_state.research_started = False
-        st.session_state.just_completed = False
-        st.session_state.show_markdown_preview = False
-        if "current_research_id" in st.session_state:
-            del st.session_state.current_research_id
-        
-        st.sidebar.success("会话已清空")
+    st.sidebar.title("DeepSearch")
 
-
-def export_results():
-    """导出结果功能"""
-    if st.session_state.current_task and st.session_state.current_task.get("success"):
-        st.sidebar.markdown("### 📤 导出结果")
-        
-        if st.sidebar.button("导出JSON"):
-            try:
-                export_data = st.session_state.research_engine.export_results()
-                # 使用自定义序列化函数处理枚举类型
-                serializable_data = json_serializable(export_data)
-                json_string = json.dumps(serializable_data, ensure_ascii=False, indent=2)
-                
-                st.sidebar.download_button(
-                    label="下载研究结果",
-                    data=json_string,
-                    file_name=f"research_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
-                st.sidebar.success("✅ JSON导出准备完成")
-            except Exception as e:
-                st.sidebar.error(f"❌ 导出失败: {str(e)}")
-        
-        # 添加Markdown导出功能
-        if st.sidebar.button("导出Markdown"):
-            try:
-                markdown_content = create_markdown_content(st.session_state.current_task)
-                
-                st.sidebar.download_button(
-                    label="下载Markdown报告",
-                    data=markdown_content,
-                    file_name=f"research_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-                    mime="text/markdown"
-                )
-                st.sidebar.success("✅ Markdown导出准备完成")
-            except Exception as e:
-                st.sidebar.error(f"❌ Markdown导出失败: {str(e)}")
-
-
-def main():
-    """主函数"""
-    # 最重要：首先初始化会话状态
-    initialize_session_state()
-    
-    # 设置API密钥
+    # API密钥和模型配置
     if not setup_api_key():
         st.warning("⚠️ 请先配置有效的 Gemini API 密钥")
         st.markdown("""
@@ -550,17 +510,73 @@ def main():
         GEMINI_API_KEY = "your_api_key_here"
         ```
         """)
-        return
+        return # 如果没有有效API密钥，则不显示侧边栏的其余部分
+
+    st.sidebar.divider()
     
+    # 会话统计
+    st.sidebar.markdown("### 📊 会话统计")
+    if st.session_state.research_engine:
+        stats = st.session_state.research_engine.state_manager.get_session_statistics()
+        
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            st.metric("总任务数", stats.get("total_tasks", 0))
+            st.metric("总搜索数", stats.get("total_searches", 0))
+        with col2:
+            st.metric("成功任务", stats.get("successful_tasks", 0))
+            session_duration = stats.get("session_duration", 0)
+            st.metric("会话时长", f"{session_duration/60:.1f}分钟")
+
+    # 导出结果
+    if st.session_state.research_results:
+        st.sidebar.divider()
+        export_results()
+
+    st.sidebar.divider()
+
+    # 清空会话按钮
+    if st.sidebar.button("🗑️ 清空会话", disabled=st.session_state.is_researching):
+        if st.session_state.research_engine:
+            st.session_state.research_engine.clear_session()
+        
+        # 清除LocalStorage
+        localS = LocalStorage()
+        localS.removeItem("api_key")
+        localS.removeItem("research_results")
+
+        # 重置所有状态
+        keys_to_reset = [
+            "research_results", "current_task", "progress_messages",
+            "is_researching", "research_complete", "research_error",
+            "current_step", "progress_percentage", "research_started",
+            "just_completed", "show_markdown_preview"
+        ]
+        for key in keys_to_reset:
+            if key in st.session_state:
+                if isinstance(st.session_state[key], list):
+                    st.session_state[key] = []
+                else:
+                    st.session_state[key] = None
+        
+        if "current_research_id" in st.session_state:
+            del st.session_state.current_research_id
+        
+        st.sidebar.success("会话已清空")
+        st.rerun()
+
+
+def main():
+    """主函数"""
+    # 最重要：首先初始化会话状态
+    initialize_session_state()
+    
+    # 显示侧边栏
+    sidebar_content()
+
     # 显示主界面
     research_interface()
     
-    # 显示侧边栏内容
-    sidebar_content()
-    
-    # 导出功能
-    export_results()
-
 
 if __name__ == "__main__":
     main() 

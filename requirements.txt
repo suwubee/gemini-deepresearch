@@ -1,6 +1,7 @@
 # Core Dependencies  
 streamlit>=1.28.0
 google-genai
+streamlit-local-storage
 
 # Async Support
 asyncio
