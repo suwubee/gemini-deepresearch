@@ -97,21 +97,36 @@ def display_task_analysis(workflow_analysis, task_id):
     if not workflow_analysis:
         return
     
+    # 确保task_id是字符串且不为空
+    if not task_id:
+        task_id = "default"
+    task_id = str(task_id)
+    
     st.markdown(f"### 📊 任务分析结果 ({task_id[:8]})")
     col1, col2 = st.columns(2)
     
     with col1:
-        st.metric("任务类型", workflow_analysis.task_type)
-        st.metric("复杂度", workflow_analysis.complexity)
-        st.metric("预估步骤", workflow_analysis.estimated_steps)
+        # 使用字典访问方式而不是对象属性访问
+        task_type = workflow_analysis.get("task_type", "未知") if isinstance(workflow_analysis, dict) else getattr(workflow_analysis, 'task_type', "未知")
+        complexity = workflow_analysis.get("complexity", "未知") if isinstance(workflow_analysis, dict) else getattr(workflow_analysis, 'complexity', "未知")
+        estimated_steps = workflow_analysis.get("estimated_steps", 0) if isinstance(workflow_analysis, dict) else getattr(workflow_analysis, 'estimated_steps', 0)
+        
+        st.metric("任务类型", task_type)
+        st.metric("复杂度", complexity)
+        st.metric("预估步骤", estimated_steps)
     
     with col2:
-        st.metric("需要搜索", "是" if workflow_analysis.requires_search else "否")
-        st.metric("多轮搜索", "是" if workflow_analysis.requires_multiple_rounds else "否")
-        st.metric("预估时间", workflow_analysis.estimated_time)
+        requires_search = workflow_analysis.get("requires_search", False) if isinstance(workflow_analysis, dict) else getattr(workflow_analysis, 'requires_search', False)
+        requires_multiple_rounds = workflow_analysis.get("requires_multiple_rounds", False) if isinstance(workflow_analysis, dict) else getattr(workflow_analysis, 'requires_multiple_rounds', False)
+        estimated_time = workflow_analysis.get("estimated_time", "未知") if isinstance(workflow_analysis, dict) else getattr(workflow_analysis, 'estimated_time', "未知")
+        
+        st.metric("需要搜索", "是" if requires_search else "否")
+        st.metric("多轮搜索", "是" if requires_multiple_rounds else "否")
+        st.metric("预估时间", estimated_time)
     
-    if workflow_analysis.reasoning:
-        st.text_area("分析推理", workflow_analysis.reasoning, height=100, disabled=True, key=f"reasoning_{task_id}")
+    reasoning = workflow_analysis.get("reasoning", "") if isinstance(workflow_analysis, dict) else getattr(workflow_analysis, 'reasoning', "")
+    if reasoning:
+        st.text_area("分析推理", reasoning, height=100, disabled=True, key=f"reasoning_{task_id}")
 
 
 def display_search_results(research_results):
