@@ -362,15 +362,59 @@ class ResearchEngine:
                 break
             
             self._notify_step(f"🔄 执行步骤: {step.name}")
-            result = await self._execute_step_with_context(step, context)
-            context.update(result)
-            self._notify_step(f"✅ 步骤 {step.name} 完成")
+            
+            # Debug: 记录步骤开始
+            step_start_time = time.time()
+            self.debug_logger.log_workflow_step(
+                step_name=step.name,
+                step_status="running",
+                input_data=context
+            )
+            
+            try:
+                result = await self._execute_step_with_context(step, context)
+                context.update(result)
+                
+                # Debug: 记录步骤完成
+                step_duration = time.time() - step_start_time
+                self.debug_logger.log_workflow_step(
+                    step_name=step.name,
+                    step_status="completed",
+                    input_data=context,
+                    output_data=result,
+                    duration=step_duration
+                )
+                
+                self._notify_step(f"✅ 步骤 {step.name} 完成 [{step_duration:.2f}s]")
+                
+            except Exception as e:
+                # Debug: 记录步骤失败
+                step_duration = time.time() - step_start_time
+                self.debug_logger.log_workflow_step(
+                    step_name=step.name,
+                    step_status="failed",
+                    input_data=context,
+                    duration=step_duration,
+                    error_message=str(e)
+                )
+                raise
             
         # 如果定义了补充搜索，则进入循环（所有强度都支持补充搜索）
         supplementary_search_step = next((s for s in workflow.steps if s.name == "supplementary_search"), None)
         if supplementary_search_step:
             current_round = 1
             default_rounds = workflow.config.get("default_search_rounds", 1)
+            
+            # Debug: 记录补充搜索循环开始
+            self.debug_logger.log_execution_flow(
+                flow_type="supplementary_search_loop",
+                description=f"开始补充搜索循环，默认轮数: {default_rounds}, 最大轮数: {effective_max_rounds}",
+                details={
+                    "default_rounds": default_rounds,
+                    "max_rounds": effective_max_rounds,
+                    "effort_level": context.get("effort_level", "medium")
+                }
+            )
             
             while current_round < effective_max_rounds:
                 # 检查停止信号
@@ -380,7 +424,21 @@ class ResearchEngine:
                 
                 # 如果已经达到默认轮数，检查信息是否充足
                 if current_round >= default_rounds:
-                    if context.get("is_sufficient"):
+                    is_sufficient = context.get("is_sufficient", False)
+                    
+                    # Debug: 记录信息充足性检查
+                    self.debug_logger.log_decision_point(
+                        decision_type="information_sufficiency_check",
+                        condition=f"current_round({current_round}) >= default_rounds({default_rounds})",
+                        result=f"is_sufficient: {is_sufficient}",
+                        context={
+                            "current_round": current_round,
+                            "default_rounds": default_rounds,
+                            "is_sufficient": is_sufficient
+                        }
+                    )
+                    
+                    if is_sufficient:
                         self._notify_step("✅ 信息已充足，跳过后续补充研究")
                         break
                     else:
@@ -388,6 +446,20 @@ class ResearchEngine:
                         effort_level = context.get("effort_level", "medium")
                         if effort_level == "low" and current_round >= 2:
                             total_content = sum(len(content) for content in self.state_manager.get_search_content_list())
+                            
+                            # Debug: 记录低强度特殊检查
+                            self.debug_logger.log_decision_point(
+                                decision_type="low_effort_content_check",
+                                condition=f"effort_level=low AND current_round({current_round})>=2 AND total_content({total_content})>1000",
+                                result=f"stop_search: {total_content > 1000}",
+                                context={
+                                    "effort_level": effort_level,
+                                    "current_round": current_round,
+                                    "total_content": total_content,
+                                    "threshold": 1000
+                                }
+                            )
+                            
                             if total_content > 1000:  # 低强度的宽松条件
                                 self._notify_step("✅ 低强度模式：信息量已足够，停止补充搜索")
                                 break
@@ -444,7 +516,23 @@ class ResearchEngine:
         
         self._notify_step(f"正在生成 {num_queries} 个搜索查询...")
         
+        # Debug: 记录API请求
+        request_id = f"gen_queries_{int(time.time() * 1000)}"
+        self.debug_logger.log_api_request(
+            request_type="generate_search_queries",
+            model=self.model_config.search_model,
+            prompt=f"为用户查询生成{num_queries}个搜索查询: {user_query}",
+            request_id=request_id,
+            context="生成搜索查询"
+        )
+        
         queries = await self.search_agent.generate_search_queries(user_query, num_queries)
+        
+        # Debug: 记录API响应
+        self.debug_logger.log_api_response(
+            request_id=request_id,
+            response_text=f"生成了{len(queries)}个查询: {queries}"
+        )
         
         self.state_manager.add_search_queries(queries)
         
@@ -461,7 +549,38 @@ class ResearchEngine:
             self._notify_progress(f"搜索查询 {i+1}/{len(search_queries)}: {query[:30]}...", 
                                  40 + (i * 20 // len(search_queries)))
             
+            # Debug: 记录搜索请求
+            search_request_id = f"search_{i}_{int(time.time() * 1000)}"
+            self.debug_logger.log_api_request(
+                request_type="grounding_search",
+                model=self.model_config.search_model,
+                prompt=f"搜索查询: {query}",
+                request_id=search_request_id,
+                context=f"搜索查询 {i+1}/{len(search_queries)}"
+            )
+            
             result = await self.search_agent.search_with_grounding(query)
+            
+            # Debug: 记录搜索结果
+            self.debug_logger.log_search_result(query, result, "grounding")
+            
+            # Debug: 记录搜索响应
+            if result.get("success"):
+                response_summary = f"成功获取内容，长度: {len(result.get('content', ''))}, 引用数: {len(result.get('citations', []))}"
+            else:
+                response_summary = f"搜索失败: {result.get('error', '未知错误')}"
+            
+            self.debug_logger.log_api_response(
+                request_id=search_request_id,
+                response_text=response_summary,
+                metadata={
+                    "success": result.get("success", False),
+                    "content_length": len(result.get("content", "")),
+                    "citations_count": len(result.get("citations", [])),
+                    "urls_count": len(result.get("urls", []))
+                },
+                error=None if result.get("success") else result.get("error", "搜索失败")
+            )
             
             if result.get("success"):
                 # 将结果添加到状态管理器（会转换为 SearchResult 对象）
@@ -524,6 +643,16 @@ class ResearchEngine:
                 reflection_model = self.model_config.get_model_for_task("reflection")
                 max_tokens = self.model_config.get_token_limits("reflection")
                 
+                # Debug: 记录反思分析API请求
+                reflection_request_id = f"reflection_{current_round}_{int(time.time() * 1000)}"
+                self.debug_logger.log_api_request(
+                    request_type="reflection_analysis",
+                    model=reflection_model,
+                    prompt=reflection_prompt,
+                    request_id=reflection_request_id,
+                    context=f"第{current_round}轮反思分析"
+                )
+                
                 response = self.search_agent.client.models.generate_content(
                     model=reflection_model,
                     contents=reflection_prompt,
@@ -531,6 +660,12 @@ class ResearchEngine:
                         "temperature": 0.3,
                         "max_output_tokens": max_tokens
                     }
+                )
+                
+                # Debug: 记录反思分析API响应
+                self.debug_logger.log_api_response(
+                    request_id=reflection_request_id,
+                    response_text=response.text
                 )
                 
                 # 解析AI反思结果
@@ -716,7 +851,39 @@ class ResearchEngine:
             self._notify_progress(f"执行补充查询 {i+1}", query_progress)
             
             try:
+                # Debug: 记录补充搜索请求
+                supp_request_id = f"supp_search_{current_round}_{i}_{int(time.time() * 1000)}"
+                self.debug_logger.log_api_request(
+                    request_type="supplementary_search",
+                    model=self.model_config.search_model,
+                    prompt=f"第{current_round}轮补充搜索: {query}",
+                    request_id=supp_request_id,
+                    context=f"第{current_round}轮补充搜索 {i+1}/{len(follow_up_queries)}"
+                )
+                
                 result = await self.search_agent.search_with_grounding(query)
+                
+                # Debug: 记录补充搜索结果
+                self.debug_logger.log_search_result(query, result, "supplementary")
+                
+                # Debug: 记录补充搜索响应
+                if result.get("success"):
+                    response_summary = f"补充搜索成功，内容长度: {len(result.get('content', ''))}, 引用数: {len(result.get('citations', []))}"
+                else:
+                    response_summary = f"补充搜索失败: {result.get('error', '未知错误')}"
+                
+                self.debug_logger.log_api_response(
+                    request_id=supp_request_id,
+                    response_text=response_summary,
+                    metadata={
+                        "round": current_round,
+                        "query_index": i,
+                        "success": result.get("success", False),
+                        "content_length": len(result.get("content", "")),
+                        "citations_count": len(result.get("citations", []))
+                    },
+                    error=None if result.get("success") else result.get("error", "补充搜索失败")
+                )
                 
                 if result.get("success"):
                     self.state_manager.add_search_result(query, result)
@@ -809,6 +976,16 @@ class ResearchEngine:
                 
                 self._notify_step(f"使用模型: {answer_model}, Token限制: {max_tokens}")
                 
+                # Debug: 记录最终答案生成API请求
+                answer_request_id = f"final_answer_{int(time.time() * 1000)}"
+                self.debug_logger.log_api_request(
+                    request_type="final_answer_generation",
+                    model=answer_model,
+                    prompt=synthesis_prompt,
+                    request_id=answer_request_id,
+                    context="生成最终答案"
+                )
+                
                 response = self.search_agent.client.models.generate_content(
                     model=answer_model,
                     contents=synthesis_prompt,
@@ -822,6 +999,12 @@ class ResearchEngine:
                 self._notify_progress("答案生成完成", 95)
                 
                 final_answer = response.text
+                
+                # Debug: 记录最终答案生成API响应
+                self.debug_logger.log_api_response(
+                    request_id=answer_request_id,
+                    response_text=final_answer
+                )
             else:
                 # 降级处理：简单拼接
                 combined_content = "\n\n---\n\n".join(search_summaries)

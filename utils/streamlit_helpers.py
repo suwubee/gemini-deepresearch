@@ -11,7 +11,11 @@ from enum import Enum
 
 def json_serializable(obj):
     """将对象转换为JSON可序列化的格式"""
-    if hasattr(obj, '__dict__'):
+    # 处理dataclass对象
+    if hasattr(obj, '__dataclass_fields__'):
+        from dataclasses import asdict
+        return json_serializable(asdict(obj))
+    elif hasattr(obj, '__dict__'):
         return {k: json_serializable(v) for k, v in obj.__dict__.items()}
     elif isinstance(obj, Enum):
         return obj.value
@@ -65,9 +69,10 @@ def create_markdown_content(research_results):
     if search_results:
         markdown_content += f"## 📊 研究统计\n\n"
         markdown_content += f"- 搜索次数：{len(search_results)}\n"
-        successful_searches = len([r for r in search_results if r.get('success')])
+        # 正确处理SearchResult对象
+        successful_searches = len([r for r in search_results if (r.success if hasattr(r, 'success') else r.get('success', False))])
         markdown_content += f"- 成功搜索：{successful_searches}\n"
-        total_citations = sum(len(r.get('citations', [])) for r in search_results)
+        total_citations = sum(len(r.citations if hasattr(r, 'citations') else r.get('citations', [])) for r in search_results)
         markdown_content += f"- 总引用数：{total_citations}\n\n"
     
     # 添加任务摘要
@@ -135,21 +140,31 @@ def display_search_results(research_results):
     st.markdown(f"### 🔍 搜索结果 ({len(search_results)}) ({task_id[:20]})")
     for i, result in enumerate(search_results, 1):
         with st.container():
-            # 使用字典访问方式而不是对象属性访问
-            query = result.get("query", "未知查询") if isinstance(result, dict) else getattr(result, 'query', "未知查询")
+            # 正确处理SearchResult对象和字典
+            if hasattr(result, 'query'):  # SearchResult对象
+                query = result.query
+                success = result.success
+                duration = result.duration
+                content = result.content
+                citations = result.citations
+                error = result.error
+            else:  # 字典格式
+                query = result.get("query", "未知查询")
+                success = result.get("success", False)
+                duration = result.get("duration", 0)
+                content = result.get("content", "")
+                citations = result.get("citations", [])
+                error = result.get("error", "未知错误")
+            
             st.markdown(f"**搜索 {i}: {query}**")
             
-            success = result.get("success", False) if isinstance(result, dict) else getattr(result, 'success', False)
             if success:
-                duration = result.get("duration", 0) if isinstance(result, dict) else getattr(result, 'duration', 0)
                 st.success(f"✅ 搜索成功 (耗时: {duration:.2f}秒)")
                 
-                content = result.get("content", "") if isinstance(result, dict) else getattr(result, 'content', "")
                 if content:
                     content_preview = content[:200] + "..." if len(content) > 200 else content
                     st.text_area(f"内容预览", content_preview, height=100, disabled=True, key=f"content_{task_id}_{i}")
                 
-                citations = result.get("citations", []) if isinstance(result, dict) else getattr(result, 'citations', [])
                 if citations:
                     st.markdown("**引用来源:**")
                     citations_list = citations or []
@@ -161,7 +176,6 @@ def display_search_results(research_results):
                         else:
                             st.markdown(f"- {url}")
             else:
-                error = result.get("error", "未知错误") if isinstance(result, dict) else getattr(result, 'error', "未知错误")
                 st.error(f"❌ 搜索失败: {error}")
             
             st.divider()

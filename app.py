@@ -318,14 +318,95 @@ def setup_api_key():
                     summary = debug_logger.get_session_summary()
                     if summary:
                         with st.sidebar.expander("📊 Debug统计", expanded=False):
-                            st.metric("API请求", summary.get("total_api_requests", 0))
-                            st.metric("搜索次数", summary.get("total_searches", 0))
-                            st.metric("错误数量", summary.get("total_errors", 0))
+                            # API请求统计
+                            api_stats = summary.get("api_requests", {})
+                            st.markdown("**🔗 API请求统计**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("总请求", api_stats.get("total", 0))
+                                st.metric("成功", api_stats.get("successful", 0))
+                            with col2:
+                                st.metric("失败", api_stats.get("failed", 0))
+                            
+                            # 按类型统计
+                            by_type = api_stats.get("by_type", {})
+                            if by_type:
+                                st.markdown("**请求类型分布:**")
+                                for req_type, count in by_type.items():
+                                    st.text(f"• {req_type}: {count}")
+                            
+                            # 按模型统计
+                            by_model = api_stats.get("by_model", {})
+                            if by_model:
+                                st.markdown("**模型使用分布:**")
+                                for model, count in by_model.items():
+                                    st.text(f"• {model}: {count}")
+                            
+                            st.divider()
+                            
+                            # 搜索统计
+                            search_stats = summary.get("searches", {})
+                            st.markdown("**🔍 搜索统计**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("总搜索", search_stats.get("total", 0))
+                                st.metric("成功", search_stats.get("successful", 0))
+                            with col2:
+                                st.metric("失败", search_stats.get("failed", 0))
+                                st.metric("总引用", search_stats.get("total_citations", 0))
+                            
+                            st.divider()
+                            
+                            # 工作流统计
+                            workflow_stats = summary.get("workflow", {})
+                            st.markdown("**⚙️ 工作流统计**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("总步骤", workflow_stats.get("total_steps", 0))
+                                st.metric("已完成", workflow_stats.get("completed_steps", 0))
+                            with col2:
+                                st.metric("失败", workflow_stats.get("failed_steps", 0))
+                            
+                            # 步骤序列
+                            step_sequence = workflow_stats.get("step_sequence", [])
+                            if step_sequence:
+                                st.markdown("**执行序列:**")
+                                for i, step in enumerate(step_sequence, 1):
+                                    st.text(f"{i}. {step}")
+                            
+                            # 步骤耗时
+                            step_durations = workflow_stats.get("step_durations", {})
+                            if step_durations:
+                                st.markdown("**步骤耗时:**")
+                                for step, duration in step_durations.items():
+                                    if duration > 0:
+                                        st.text(f"• {step}: {duration:.2f}s")
+                            
+                            st.divider()
+                            
+                            # 会话信息
+                            session_duration = summary.get("session_duration", 0)
+                            if session_duration > 0:
+                                st.metric("会话时长", f"{session_duration:.2f}s")
+                            
+                            # 错误统计
+                            error_stats = summary.get("errors", {})
+                            if error_stats.get("total", 0) > 0:
+                                st.markdown("**❌ 错误统计**")
+                                st.metric("错误总数", error_stats.get("total", 0))
+                                by_error_type = error_stats.get("by_type", {})
+                                if by_error_type:
+                                    for error_type, count in by_error_type.items():
+                                        st.text(f"• {error_type}: {count}")
                     
                     # 立即保存按钮
                     if st.sidebar.button("💾 保存Debug日志"):
                         debug_logger.save_now()
                         st.sidebar.success("✅ Debug日志已保存")
+                    
+                    # 查看详细日志按钮
+                    if st.sidebar.button("📋 查看详细日志"):
+                        st.session_state.show_debug_details = True
         else:
             st.session_state.api_key_validated = False
             st.sidebar.error("❌ API密钥验证失败")
@@ -605,6 +686,156 @@ def research_interface():
     # 如果有错误，显示错误信息
     if st.session_state.research_error and not st.session_state.is_researching:
         st.error(f"❌ 研究失败: {st.session_state.research_error}")
+    
+    # 显示详细Debug日志
+    if st.session_state.get("show_debug_details", False):
+        st.markdown("---")
+        st.subheader("🐛 详细Debug日志")
+        
+        from utils.debug_logger import get_debug_logger
+        debug_logger = get_debug_logger()
+        
+        if debug_logger.enabled and debug_logger.session_data:
+            # 创建标签页
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 API请求", "🔍 搜索结果", "⚙️ 工作流步骤", "❌ 错误日志", "📊 会话信息"])
+            
+            with tab1:
+                st.markdown("### API请求详情")
+                api_requests = debug_logger.session_data.get("api_requests", [])
+                if api_requests:
+                    for i, req in enumerate(api_requests):
+                        with st.expander(f"请求 {i+1}: {req.get('request_type', 'unknown')} - {req.get('context', '')}", expanded=False):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.text(f"时间: {req.get('timestamp', 'N/A')}")
+                                st.text(f"请求ID: {req.get('request_id', 'N/A')}")
+                                st.text(f"模型: {req.get('model', 'N/A')}")
+                                st.text(f"类型: {req.get('request_type', 'N/A')}")
+                                st.text(f"上下文: {req.get('context', 'N/A')}")
+                            with col2:
+                                st.text(f"Prompt长度: {req.get('full_prompt_length', 0)}")
+                                response = req.get('response', {})
+                                if response:
+                                    st.text(f"响应长度: {response.get('full_response_length', 0)}")
+                                    st.text(f"耗时: {response.get('duration', 0):.2f}s")
+                                    st.text(f"状态: {response.get('status', 'N/A')}")
+                            
+                            # 显示完整prompt和响应
+                            if st.checkbox(f"显示完整内容 - 请求{i+1}", key=f"show_full_req_{i}"):
+                                st.text_area("完整Prompt:", req.get('full_prompt', ''), height=200, key=f"prompt_{i}")
+                                if response and response.get('full_response'):
+                                    st.text_area("完整响应:", response.get('full_response', ''), height=200, key=f"response_{i}")
+                else:
+                    st.info("暂无API请求记录")
+            
+            with tab2:
+                st.markdown("### 搜索结果详情")
+                search_results = debug_logger.session_data.get("search_results", [])
+                if search_results:
+                    for i, search in enumerate(search_results):
+                        with st.expander(f"搜索 {i+1}: {search.get('query', 'unknown')[:50]}...", expanded=False):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.text(f"时间: {search.get('timestamp', 'N/A')}")
+                                st.text(f"查询: {search.get('query', 'N/A')}")
+                                st.text(f"类型: {search.get('search_type', 'N/A')}")
+                                st.text(f"成功: {search.get('success', False)}")
+                            with col2:
+                                st.text(f"内容长度: {search.get('content_length', 0)}")
+                                st.text(f"引用数: {search.get('citations_count', 0)}")
+                                st.text(f"URL数: {search.get('urls_count', 0)}")
+                                st.text(f"耗时: {search.get('duration', 0):.2f}s")
+                            
+                            # 显示完整搜索结果
+                            if st.checkbox(f"显示完整结果 - 搜索{i+1}", key=f"show_full_search_{i}"):
+                                full_result = search.get('full_result', {})
+                                st.json(full_result)
+                else:
+                    st.info("暂无搜索记录")
+            
+            with tab3:
+                st.markdown("### 工作流步骤详情")
+                workflow_steps = debug_logger.session_data.get("workflow_steps", [])
+                if workflow_steps:
+                    for i, step in enumerate(workflow_steps):
+                        step_name = step.get('step_name', 'unknown')
+                        step_status = step.get('step_status', 'unknown')
+                        duration = step.get('duration', 0)
+                        
+                        status_icon = {"completed": "✅", "running": "🔄", "failed": "❌", "info": "ℹ️", "decision": "🤔"}.get(step_status, "❓")
+                        
+                        with st.expander(f"步骤 {i+1}: {status_icon} {step_name} [{duration:.2f}s]", expanded=False):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.text(f"时间: {step.get('timestamp', 'N/A')}")
+                                st.text(f"步骤名: {step_name}")
+                                st.text(f"状态: {step_status}")
+                                if step.get('step_index') is not None:
+                                    st.text(f"步骤索引: {step.get('step_index', 0) + 1}/{step.get('total_steps', 0)}")
+                            with col2:
+                                st.text(f"耗时: {duration:.2f}s")
+                                if step.get('error_message'):
+                                    st.text(f"错误: {step.get('error_message', '')}")
+                            
+                            # 显示输入输出数据
+                            if st.checkbox(f"显示详细数据 - 步骤{i+1}", key=f"show_step_data_{i}"):
+                                if step.get('full_input'):
+                                    st.text("输入数据:")
+                                    st.json(step.get('input_summary', {}))
+                                if step.get('full_output'):
+                                    st.text("输出数据:")
+                                    st.json(step.get('output_summary', {}))
+                else:
+                    st.info("暂无工作流步骤记录")
+            
+            with tab4:
+                st.markdown("### 错误日志")
+                errors = debug_logger.session_data.get("errors", [])
+                if errors:
+                    for i, error in enumerate(errors):
+                        with st.expander(f"错误 {i+1}: {error.get('error_type', 'unknown')}", expanded=False):
+                            st.text(f"时间: {error.get('timestamp', 'N/A')}")
+                            st.text(f"类型: {error.get('error_type', 'N/A')}")
+                            st.text(f"消息: {error.get('error_message', 'N/A')}")
+                            
+                            if error.get('context'):
+                                st.text("上下文:")
+                                st.json(error.get('context', {}))
+                            
+                            if error.get('stacktrace'):
+                                st.text("堆栈跟踪:")
+                                st.code(error.get('stacktrace', ''), language='python')
+                else:
+                    st.info("暂无错误记录")
+            
+            with tab5:
+                st.markdown("### 会话信息")
+                session_info = debug_logger.session_data.get("session_info", {})
+                if session_info:
+                    st.json(session_info)
+                
+                st.markdown("### 研究结果")
+                research_results = debug_logger.session_data.get("research_results", [])
+                if research_results:
+                    for i, result in enumerate(research_results):
+                        with st.expander(f"研究结果 {i+1}: {result.get('user_query', 'unknown')[:50]}...", expanded=False):
+                            st.text(f"时间: {result.get('timestamp', 'N/A')}")
+                            st.text(f"用户查询: {result.get('user_query', 'N/A')}")
+                            st.text(f"答案长度: {result.get('final_answer_length', 0)}")
+                            st.text(f"成功: {result.get('success', False)}")
+                            
+                            if result.get('metadata'):
+                                st.text("元数据:")
+                                st.json(result.get('metadata', {}))
+                else:
+                    st.info("暂无研究结果记录")
+        else:
+            st.info("Debug模式未启用或暂无数据")
+        
+        # 关闭按钮
+        if st.button("❌ 关闭详细日志"):
+            st.session_state.show_debug_details = False
+            st.rerun()
 
 
 def export_results():
