@@ -8,12 +8,10 @@ import json
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime
 
-try:
-    from google.genai import Client
-    from google.genai.types import GenerateContentConfig
-except ImportError:
-    Client = None
-
+from typing import Optional
+from .api_factory import APIClientFactory
+from .api_client import BaseAPIClient, APIResponse
+from .api_config import APIConfig, APIMode
 from utils.prompts import PromptTemplates
 from utils.helpers import extract_json_from_text, safe_json_loads
 
@@ -156,15 +154,25 @@ class DynamicWorkflow:
 
 
 class DynamicWorkflowBuilder:
-    """动态工作流构建器"""
+    """动态工作流构建器 - 支持双模式API"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash-preview-05-20", preferred_mode: Optional[APIMode] = None):
         self.api_key = api_key
         self.model_name = model_name
-        self.client = None
+        self.preferred_mode = preferred_mode
         
-        if Client:
-            self.client = Client(api_key=api_key)
+        # 使用工厂创建客户端
+        self.client = APIClientFactory.create_analysis_client(
+            api_key=api_key,
+            model_name=model_name,
+            preferred_mode=preferred_mode
+        )
+        
+        # 打印客户端信息
+        client_info = APIClientFactory.get_client_info(model_name)
+        print(f"🏗️ 工作流构建器初始化:")
+        print(f"  模型: {model_name}")
+        print(f"  模式: {client_info.get('mode', 'unknown')}")
     
     async def analyze_task_and_build_workflow(self, user_query: str) -> DynamicWorkflow:
         """
@@ -204,24 +212,16 @@ class DynamicWorkflowBuilder:
             else:
                 prompt_content = str(prompt)
             
-            # 使用模型配置获取合适的模型和token限制
-            from core.model_config import get_model_config
-            model_config = get_model_config()
-            task_model = model_config.get_model_for_task("task_analysis")
-            max_tokens = model_config.get_token_limits("task_analysis")
-            
-            response = self.client.models.generate_content(
-                model=task_model,
-                contents=prompt_content,
-                config=GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=max_tokens,
-                )
+            # 使用统一的客户端接口
+            response = await self.client.generate_content(
+                prompt=prompt_content,
+                temperature=0.1,
+                max_tokens=4096
             )
             
             print("API调用完成，解析响应...")
             
-            if response and response.text:
+            if response.success and response.text:
                 print(f"收到响应: {response.text[:200]}...")
                 analysis = extract_json_from_text(response.text)
                 if analysis:
@@ -230,7 +230,7 @@ class DynamicWorkflowBuilder:
                 else:
                     print("JSON解析失败，使用默认分析")
             else:
-                print("空响应，使用默认分析")
+                print(f"API调用失败或空响应: {response.error if response.error else '未知错误'}，使用默认分析")
             
         except Exception as e:
             print(f"任务分析失败: {e}，使用默认分析")

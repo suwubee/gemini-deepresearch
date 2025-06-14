@@ -13,30 +13,53 @@ from .workflow_builder import DynamicWorkflowBuilder, DynamicWorkflow, WorkflowS
 from .search_agent import SearchAgent
 from .state_manager import StateManager, TaskStatus
 from .model_config import ModelConfiguration, get_model_config, set_user_model
+from .api_factory import APIClientFactory, ClientManager
+from .api_config import APIConfig, APIMode
 from utils.prompts import PromptTemplates
 from utils.helpers import extract_json_from_text
 from utils.debug_logger import get_debug_logger
 
 
 class ResearchEngine:
-    """深度研究引擎核心"""
+    """深度研究引擎核心 - 支持双模式API"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", preferred_mode: Optional[APIMode] = None):
         self.api_key = api_key
+        self.user_model = model_name
+        self.preferred_mode = preferred_mode
         
         # 设置用户选择的模型，但搜索功能将固定使用gemini-2.0-flash
         set_user_model(model_name)
         self.model_config = get_model_config()
         
-        print(f"🤖 模型配置:")
+        print(f"🤖 研究引擎初始化:")
+        print(f"  用户选择模型: {model_name}")
         print(f"  搜索模型: {self.model_config.search_model} (固定)")
         print(f"  任务分析模型: {self.model_config.task_analysis_model}")
         print(f"  反思模型: {self.model_config.reflection_model}")
         print(f"  答案生成模型: {self.model_config.answer_model}")
+        if preferred_mode:
+            print(f"  优先模式: {preferred_mode.value}")
+        
+        # 初始化客户端管理器
+        self.client_manager = ClientManager(api_key)
+        self.client_manager.update_config(
+            search_model=self.model_config.search_model,
+            analysis_model=self.model_config.task_analysis_model,
+            answer_model=self.model_config.answer_model
+        )
         
         # 初始化核心组件，使用对应的模型
-        self.workflow_builder = DynamicWorkflowBuilder(api_key, self.model_config.task_analysis_model)
-        self.search_agent = SearchAgent(api_key, self.model_config.search_model)
+        self.workflow_builder = DynamicWorkflowBuilder(
+            api_key, 
+            self.model_config.task_analysis_model,
+            preferred_mode=preferred_mode
+        )
+        self.search_agent = SearchAgent(
+            api_key, 
+            self.model_config.search_model,
+            preferred_mode=preferred_mode
+        )
         self.state_manager = StateManager()
         self.debug_logger = get_debug_logger()
         
@@ -1160,4 +1183,63 @@ Note: This information is gathered from web searches. Please verify for accuracy
     def clear_session(self):
         """清除会话数据"""
         self.state_manager.clear_session()
-        self.search_agent.clear_history() 
+        self.search_agent.clear_history()
+        
+    async def close_clients(self):
+        """关闭所有客户端连接"""
+        try:
+            await self.client_manager.close_all()
+            if hasattr(self.search_agent.client, 'close'):
+                await self.search_agent.client.close()
+        except Exception as e:
+            print(f"关闭客户端时出错: {e}")
+    
+    def get_client_info(self) -> Dict[str, Any]:
+        """获取客户端信息"""
+        return {
+            "search_client": {
+                "model": self.search_agent.model_name,
+                "type": self.search_agent.client.__class__.__name__,
+                "supports_search": self.search_agent.client.supports_search(),
+                "supports_tools": self.search_agent.client.supports_tools()
+            },
+            "workflow_client": {
+                "model": self.workflow_builder.model_name,
+                "type": self.workflow_builder.client.__class__.__name__,
+                "supports_search": self.workflow_builder.client.supports_search(),
+                "supports_tools": self.workflow_builder.client.supports_tools()
+            },
+            "dual_mode_enabled": APIConfig.is_dual_mode_enabled(),
+            "available_models": APIConfig.get_available_models()
+        }
+    
+    def switch_mode(self, preferred_mode: APIMode):
+        """切换API模式（需要重新初始化客户端）"""
+        self.preferred_mode = preferred_mode
+        
+        # 重新创建客户端
+        self.search_agent = SearchAgent(
+            self.api_key,
+            self.model_config.search_model,
+            preferred_mode=preferred_mode
+        )
+        
+        self.workflow_builder = DynamicWorkflowBuilder(
+            self.api_key,
+            self.model_config.task_analysis_model,
+            preferred_mode=preferred_mode
+        )
+        
+        print(f"✅ 已切换到 {preferred_mode.value} 模式")
+        
+    @classmethod
+    def create_with_config(cls, api_key: str, **config) -> "ResearchEngine":
+        """使用配置创建研究引擎实例"""
+        model_name = config.get("model_name", "gemini-2.0-flash")
+        preferred_mode = config.get("preferred_mode")
+        
+        # 如果传入字符串模式，转换为枚举
+        if isinstance(preferred_mode, str):
+            preferred_mode = APIMode(preferred_mode)
+        
+        return cls(api_key, model_name, preferred_mode) 

@@ -1,6 +1,6 @@
 """
 搜索代理类
-使用 Gemini 2.0 内置搜索功能实现智能搜索
+支持双模式API：Google GenAI SDK 和 OpenAI兼容HTTP API
 """
 
 import time
@@ -8,13 +8,9 @@ import traceback
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 
-try:
-    from google.genai import Client
-    from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
-except ImportError:
-    print("警告: 未安装必要的库，请运行: pip install google-genai")
-    Client = None
-
+from .api_factory import APIClientFactory, ClientManager
+from .api_client import BaseAPIClient, APIResponse
+from .api_config import APIConfig, APIMode
 from utils.helpers import (
     extract_json_from_text, 
     format_citations, 
@@ -25,26 +21,37 @@ from utils.debug_logger import get_debug_logger
 
 
 class SearchAgent:
-    """智能搜索代理"""
+    """智能搜索代理 - 支持双模式API"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", preferred_mode: Optional[APIMode] = None):
         self.api_key = api_key
         self.model_name = model_name
-        self.client = None
+        self.preferred_mode = preferred_mode
         self.search_history = []
         self.debug_logger = get_debug_logger()
         
-        # 初始化客户端
-        if Client:
-            self.client = Client(api_key=api_key)
+        # 使用工厂创建客户端
+        self.client = APIClientFactory.create_search_client(
+            api_key=api_key,
+            model_name=model_name,
+            preferred_mode=preferred_mode
+        )
+        
+        # 打印客户端信息
+        client_info = APIClientFactory.get_client_info(model_name)
+        print(f"🔍 搜索代理初始化:")
+        print(f"  模型: {model_name}")
+        print(f"  模式: {client_info.get('mode', 'unknown')}")
+        print(f"  支持搜索: {client_info.get('supports_search', False)}")
+        print(f"  支持工具: {client_info.get('supports_tools', False)}")
     
     def _is_available(self) -> bool:
         """检查搜索代理是否可用"""
-        return Client is not None and self.client is not None
+        return self.client is not None
     
     async def search_with_grounding(self, query: str, use_search: bool = True) -> Dict[str, Any]:
         """
-        使用 Gemini 2.0 的内置搜索功能进行搜索
+        使用配置的API模式进行搜索
         
         Args:
             query: 搜索查询
@@ -54,81 +61,42 @@ class SearchAgent:
             包含搜索结果和元数据的字典
         """
         if not self._is_available():
-            raise Exception("搜索代理不可用，请检查 google-genai 库是否正确安装")
+            raise Exception("搜索代理不可用，请检查客户端初始化")
         
         try:
             search_start_time = datetime.now()
-            request_id = f"search_{int(time.time() * 1000)}"
             
-            # Debug: 记录API请求
-            config_dict = {
-                "temperature": 0.1,
-                "max_output_tokens": 8192,
-                "use_search": use_search
-            }
-            self.debug_logger.log_api_request(
-                request_type="search_with_grounding",
-                model=self.model_name,
+            # 准备工具配置
+            tools = []
+            if use_search and self.client.supports_search():
+                tools.append({"type": "web_search"})
+            elif use_search and not self.client.supports_search():
+                # 如果客户端不支持搜索但需要搜索，记录警告
+                print(f"⚠️ 模型 {self.model_name} 不支持原生搜索，将使用普通对话模式")
+            
+            # 使用统一的客户端接口
+            response = await self.client.generate_content(
                 prompt=query,
-                config=config_dict,
-                request_id=request_id
-            )
-            
-            # 添加延迟避免速率限制
-            if hasattr(self, '_last_request_time'):
-                time_since_last = time.time() - self._last_request_time
-                if time_since_last < 2.0:
-                    time.sleep(2.0 - time_since_last)
-            
-            self._last_request_time = time.time()
-            
-            # 配置工具和参数
-            config = GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=8192,
-            )
-            
-            if use_search:
-                google_search_tool = Tool(google_search=GoogleSearch())
-                config.tools = [google_search_tool]
-            
-            # 使用 google.genai.Client 进行搜索
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=query,
-                config=config
+                max_tokens=8192,
+                tools=tools if tools else None
             )
             
             search_duration = (datetime.now() - search_start_time).total_seconds()
             
-            # Debug: 记录API响应
-            response_text = response.text if response and hasattr(response, 'text') else ""
-            metadata = {}
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
-                    metadata["has_grounding"] = True
-                    if hasattr(candidate.grounding_metadata, 'web_search_queries'):
-                        metadata["search_queries"] = list(candidate.grounding_metadata.web_search_queries)
-            
-            self.debug_logger.log_api_response(
-                request_id=request_id,
-                response_text=response_text,
-                metadata=metadata
-            )
-            
-            # 解析响应
-            result = self._parse_search_response(response, query, search_duration)
+            # 转换响应格式以保持兼容性
+            result = self._convert_to_legacy_format(response, query, search_duration)
             
             # Debug: 记录搜索结果
-            self.debug_logger.log_search_result(query, result, "grounding")
+            self.debug_logger.log_search_result(query, result, "dual_mode")
             
             # 记录搜索历史
             self.search_history.append({
                 "query": query,
                 "timestamp": datetime.now(),
                 "duration": search_duration,
-                "has_grounding": result.get("has_grounding", False)
+                "has_grounding": result.get("has_grounding", False),
+                "api_mode": self.client.__class__.__name__
             })
             
             return result
@@ -150,13 +118,29 @@ class SearchAgent:
             self.debug_logger.log_error(
                 error_type="SearchError",
                 error_message=str(e),
-                context={"query": query, "model": self.model_name},
+                context={"query": query, "model": self.model_name, "client_type": self.client.__class__.__name__},
                 stacktrace=traceback.format_exc()
             )
             
             return error_result
     
+    def _convert_to_legacy_format(self, response: APIResponse, original_query: str, duration: float) -> Dict[str, Any]:
+        """将新的API响应转换为旧的格式以保持兼容性"""
+        return {
+            "success": response.success,
+            "query": original_query,
+            "content": response.text,
+            "citations": response.citations,
+            "urls": response.urls,
+            "has_grounding": response.has_grounding,
+            "search_queries": response.search_queries,
+            "grounding_chunks": len(response.citations),
+            "duration": duration,
+            "error": response.error if not response.success else None
+        }
+
     def _parse_search_response(self, response, original_query: str, duration: float) -> Dict[str, Any]:
+        """保留旧方法以保持向后兼容性"""
         """解析搜索响应"""
         try:
             content = response.text if response and hasattr(response, 'text') else ""
@@ -288,16 +272,14 @@ class SearchAgent:
             {{"queries": ["查询1", "查询2", "查询3"]}}
             """
             
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=GenerateContentConfig(
-                    temperature=0.3,
-                    max_output_tokens=1024,
-                )
+            # 使用统一的客户端接口
+            response = await self.client.generate_content(
+                prompt=prompt,
+                temperature=0.3,
+                max_tokens=1024
             )
             
-            if response and response.text:
+            if response.success and response.text:
                 result = extract_json_from_text(response.text)
                 if result and "queries" in result:
                     return result["queries"][:num_queries]
