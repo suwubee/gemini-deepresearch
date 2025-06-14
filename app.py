@@ -6,6 +6,7 @@ DeepSearch - 智能深度研究助手
 import streamlit as st
 import asyncio
 import json
+import os
 import time
 import threading
 import concurrent.futures
@@ -18,56 +19,82 @@ import queue
 import streamlit.components.v1 as components
 
 class SafeLocalStorage:
-    """安全的LocalStorage实现，避免undefined key问题"""
+    """安全的LocalStorage实现，使用session state作为主要存储"""
     
     def __init__(self):
         self._cache = {}
+        self._cache_file = ".streamlit_cache.json"
+    
+    def _load_from_file_cache(self):
+        """从文件缓存加载数据"""
+        try:
+            if os.path.exists(self._cache_file):
+                with open(self._cache_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+    
+    def _save_to_file_cache(self, data):
+        """保存数据到文件缓存"""
+        try:
+            with open(self._cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     
     def getItem(self, key, default=None):
-        """从LocalStorage获取数据"""
-        if key in self._cache:
-            return self._cache[key]
+        """从session state或文件缓存获取数据"""
+        # 首先检查session state缓存
+        session_key = f"ls_{key}"
+        if session_key in st.session_state:
+            cached_value = st.session_state[session_key]
+            if cached_value is not None and cached_value != "null" and str(cached_value).strip() != "":
+                return cached_value
         
-        try:
-            html_code = f"""
-            <script>
-                const value = localStorage.getItem('{key}');
-                if (value !== null) {{
-                    parent.postMessage({{
-                        type: 'localStorage_get',
-                        key: '{key}',
-                        value: value
-                    }}, '*');
-                }} else {{
-                    parent.postMessage({{
-                        type: 'localStorage_get',
-                        key: '{key}',
-                        value: null
-                    }}, '*');
-                }}
-            </script>
-            """
-            
-            # 使用session state作为fallback
-            session_key = f"ls_{key}"
-            if session_key in st.session_state:
-                return st.session_state[session_key]
-            
-            return default
-        except Exception:
-            return default
+        # 如果session state中没有，尝试从文件缓存加载
+        if not hasattr(st.session_state, '_file_cache_loaded'):
+            file_cache = self._load_from_file_cache()
+            if file_cache:
+                for cache_key, cache_value in file_cache.items():
+                    if cache_value is not None and str(cache_value).strip() != "":
+                        st.session_state[f"ls_{cache_key}"] = cache_value
+                st.session_state._file_cache_loaded = True
+                
+                # 再次检查session state
+                if session_key in st.session_state:
+                    cached_value = st.session_state[session_key]
+                    if cached_value is not None and cached_value != "null" and str(cached_value).strip() != "":
+                        return cached_value
+        
+        # 如果都没有，返回默认值
+        return default
     
     def setItem(self, key, value):
-        """向LocalStorage保存数据"""
+        """向LocalStorage、session state和文件缓存保存数据"""
         try:
             # 缓存到session state
             session_key = f"ls_{key}"
             st.session_state[session_key] = value
             self._cache[key] = value
             
-            # 尝试保存到浏览器LocalStorage
+            # 保存到文件缓存
+            try:
+                file_cache = self._load_from_file_cache()
+                file_cache[key] = value
+                self._save_to_file_cache(file_cache)
+            except Exception:
+                pass  # 文件缓存失败不影响主要功能
+            
+            # 使用HTML/JS方法保存到浏览器LocalStorage
             if isinstance(value, str):
-                escaped_value = value.replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n')
+                # 对于JSON字符串，需要更仔细的转义
+                escaped_value = (value.replace('\\', '\\\\')
+                               .replace("'", "\\'")
+                               .replace('"', '\\"')
+                               .replace('\n', '\\n')
+                               .replace('\r', '\\r')
+                               .replace('\t', '\\t'))
             else:
                 escaped_value = str(value).replace("'", "\\'").replace('"', '\\"')
             
@@ -82,13 +109,14 @@ class SafeLocalStorage:
             </script>
             """
             components.html(html_code, height=0)
+            
             return True
         except Exception as e:
             st.warning(f"保存到LocalStorage失败: {e}")
             return False
     
     def removeItem(self, key):
-        """从LocalStorage删除数据"""
+        """从LocalStorage、session state和文件缓存删除数据"""
         try:
             # 从缓存中删除
             if key in self._cache:
@@ -99,7 +127,16 @@ class SafeLocalStorage:
             if session_key in st.session_state:
                 del st.session_state[session_key]
             
-            # 从浏览器LocalStorage中删除
+            # 从文件缓存中删除
+            try:
+                file_cache = self._load_from_file_cache()
+                if key in file_cache:
+                    del file_cache[key]
+                    self._save_to_file_cache(file_cache)
+            except Exception:
+                pass  # 文件缓存失败不影响主要功能
+            
+            # 使用HTML/JS方法从浏览器LocalStorage中删除
             html_code = f"""
             <script>
                 try {{
@@ -111,6 +148,7 @@ class SafeLocalStorage:
             </script>
             """
             components.html(html_code, height=0)
+            
             return True
         except Exception as e:
             st.warning(f"从LocalStorage删除失败: {e}")
@@ -207,6 +245,9 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
+    # 初始化LocalStorage数据加载
+    initialize_from_localstorage()
+
     # 尝试从LocalStorage加载API密钥
     try:
         if "ls_api_key" not in st.session_state:
@@ -223,6 +264,64 @@ def initialize_session_state():
             st.session_state.api_key_to_load = initial_api_key
     except Exception:
         pass  # 忽略LocalStorage加载错误
+
+
+def initialize_from_localstorage():
+    """在应用启动时从浏览器LocalStorage加载数据到session state"""
+    if 'localstorage_initialized' not in st.session_state:
+        # 创建一个唯一的会话ID来标识这次加载
+        session_id = str(hash(str(st.session_state)))[-8:]
+        
+        # 创建JavaScript代码来读取LocalStorage并通过URL参数传递数据
+        html_code = f"""
+        <script>
+            function loadFromLocalStorage() {{
+                try {{
+                    // 读取API密钥
+                    const apiKey = localStorage.getItem('api_key');
+                    if (apiKey && apiKey !== 'null' && apiKey.trim() !== '') {{
+                        console.log('Found API key in localStorage, length:', apiKey.length);
+                        // 将API密钥存储到一个隐藏的meta标签中
+                        let metaApiKey = document.querySelector('meta[name="ls-api-key"]');
+                        if (!metaApiKey) {{
+                            metaApiKey = document.createElement('meta');
+                            metaApiKey.name = 'ls-api-key';
+                            document.head.appendChild(metaApiKey);
+                        }}
+                        metaApiKey.content = apiKey;
+                    }}
+                    
+                    // 读取研究结果
+                    const researchResults = localStorage.getItem('research_results');
+                    if (researchResults && researchResults !== 'null' && researchResults.trim() !== '') {{
+                        console.log('Found research results in localStorage, length:', researchResults.length);
+                        // 将研究结果存储到一个隐藏的meta标签中
+                        let metaResults = document.querySelector('meta[name="ls-research-results"]');
+                        if (!metaResults) {{
+                            metaResults = document.createElement('meta');
+                            metaResults.name = 'ls-research-results';
+                            document.head.appendChild(metaResults);
+                        }}
+                        metaResults.content = researchResults;
+                    }}
+                    
+                    console.log('LocalStorage data loaded to meta tags');
+                }} catch (e) {{
+                    console.error('Error loading LocalStorage:', e);
+                }}
+            }}
+            
+            // 页面加载完成后执行加载
+            if (document.readyState === 'loading') {{
+                document.addEventListener('DOMContentLoaded', loadFromLocalStorage);
+            }} else {{
+                loadFromLocalStorage();
+            }}
+        </script>
+        """
+        
+        components.html(html_code, height=0)
+        st.session_state['localstorage_initialized'] = True
 
 
 def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
@@ -275,10 +374,13 @@ def setup_api_key():
             st.session_state.api_key_validated = True
             st.sidebar.success("✅ API密钥配置成功")
             
-            # 如果是新的有效key，则保存到localStorage
-            if api_key != api_key_from_storage:
+            # 总是保存有效的API密钥到localStorage（确保持久化）
+            try:
                 localS.setItem("api_key", api_key)
                 st.session_state.api_key_to_load = api_key # 更新state
+                st.session_state.ls_api_key = api_key # 更新缓存
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ 保存API密钥失败: {e}")
             
             # 显示模型配置详情
             if st.session_state.research_engine:
@@ -614,9 +716,16 @@ def research_interface():
                             serializable_results = json_serializable(st.session_state.research_results)
                             # 转换为JSON字符串
                             json_string = json.dumps(serializable_results, ensure_ascii=False)
-                            localS.setItem("research_results", json_string)
+                            success = localS.setItem("research_results", json_string)
+                            if success:
+                                # 更新缓存
+                                st.session_state.ls_research_results = json_string
+                            else:
+                                st.warning("⚠️ 保存历史记录到LocalStorage失败")
                         except Exception as e:
                             st.warning(f"⚠️ 保存历史记录失败: {e}")
+                            import traceback
+                            st.error(f"详细错误: {traceback.format_exc()}")
 
                     elif item["type"] == "error":
                         st.session_state.is_researching = False
