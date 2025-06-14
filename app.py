@@ -416,25 +416,34 @@ def research_interface():
                 else: # 研究刚刚结束，刷新一次以显示最终结果
                     st.rerun()
             except queue.Empty:
-                # 队列为空，稍后重试
+                # 队列为空，检查后台任务是否仍在运行
                 if st.session_state.is_researching:
-                    time.sleep(0.1)
-                    st.rerun()
+                    future = st.session_state.get("current_task_future")
+                    if future and future.done():
+                        # 任务已结束，但队列中没有消息，说明可能发生意外
+                        try:
+                            # 尝试获取结果，这会重新引发在线程中发生的任何异常
+                            future.result() 
+                            # 如果没有异常，但走到了这里，说明逻辑有问题
+                            st.session_state.research_error = "研究意外终止，但未报告明确错误。"
+                        except Exception as e:
+                            # 捕获到后台任务的异常
+                            st.session_state.research_error = f"研究任务在后台发生错误: {e}"
+                        
+                        st.session_state.is_researching = False
+                        st.rerun()
+                    else:
+                        # 任务仍在运行，队列为空是正常的，继续轮询
+                        time.sleep(0.1)
+                        st.rerun()
 
-    # 显示最近一次完成的研究结果
-    if st.session_state.research_complete and not st.session_state.is_researching:
-        if st.session_state.current_task:
-            result = st.session_state.current_task
-            if result.get("success"):
-                st.success("🎉 研究完成！")
-                display_final_answer(result)
-                display_search_results(result)
-                display_task_analysis(result.get("workflow_analysis"), result.get("task_id"))
-            else:
-                st.error(f"研究失败: {result.get('error', '未知错误')}")
-        
     # 显示历史研究结果
     if st.session_state.research_results:
+        # 如果是刚刚完成，显示一个成功的提示
+        if st.session_state.just_completed:
+            st.success("🎉 研究完成！")
+            st.session_state.just_completed = False # 重置标记，避免重复显示
+
         st.markdown("---")
         st.subheader("📜 研究历史记录")
         for i, result in enumerate(reversed(st.session_state.research_results)):

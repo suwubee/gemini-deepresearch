@@ -48,9 +48,8 @@ def create_markdown_content(research_results):
     if citations:
         markdown_content += "## 📚 引用来源\n\n"
         for i, citation in enumerate(citations[:10], 1):
-            title = citation.get("title", f"来源 {i}")
             url = citation.get("url", "#")
-            markdown_content += f"{i}. [{title}]({url})\n"
+            markdown_content += f"{i}. {url}\n"
         markdown_content += "\n"
     
     # 添加搜索统计
@@ -242,31 +241,8 @@ def display_final_answer(research_results):
                 if citations:
                     st.markdown("**引用来源:**")
                     for i, citation in enumerate(citations, 1):
-                        title = citation.get("title", f"来源 {i}")
                         url = citation.get("url", "#")
-                        # 不再显示"Source from"，直接显示网页标题
-                        
-                        # 修复：如果URL是redirect链接，尝试映射到实际域名
-                        if "vertexaisearch.cloud.google.com" in url:
-                            # 根据标题尝试推导原始URL
-                            if title and title != f"来源 {i}":
-                                clean_title = title.split('.')[0].lower()
-                                domain_map = {
-                                    'bondcap': 'bondcap.com',
-                                    'zdnet': 'zdnet.com',
-                                    'techcrunch': 'techcrunch.com',
-                                    'reuters': 'reuters.com',
-                                    'bloomberg': 'bloomberg.com',
-                                    'cnbc': 'cnbc.com',
-                                    'forbes': 'forbes.com',
-                                    'marketwatch': 'marketwatch.com'
-                                }
-                                for key, domain in domain_map.items():
-                                    if key in clean_title:
-                                        url = f"https://{domain}"
-                                        break
-                        
-                        st.markdown(f"**{i}. [{title}]({url})**")
+                        st.markdown(f"**{i}.** {url}")
                         st.divider()
                 
                 if urls:

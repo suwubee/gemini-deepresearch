@@ -676,11 +676,15 @@ class ResearchEngine:
         }
     
     async def _generate_final_answer_step(self, **kwargs) -> Dict[str, Any]:
-        """生成最终答案步骤"""
-        user_query = kwargs.get("user_query", "")
+        """
+        生成最终答案
+        这是工作流的最后一步
+        """
+        context = kwargs.get("context", {})
+        self._notify_step("正在综合所有信息，生成最终研究报告...")
+        self._notify_progress("生成最终答案", 95)
         
-        self._notify_step("正在生成最终答案...")
-        self._notify_progress("综合信息生成答案", 90)
+        user_query = context.get("user_query")
         
         # 获取所有搜索结果
         all_results = self.state_manager.get_successful_search_results()
@@ -707,6 +711,9 @@ class ResearchEngine:
         
         synthesis_prompt = PromptTemplates.answer_synthesis_prompt(user_query, search_summaries)
         
+        # 在调用模型之前再次通知，让用户知道正在进行耗时操作
+        self._notify_step(f"调用最终模型({self.model_config.answer_model})生成报告，请耐心等待...")
+
         try:
             # 使用SearchAgent的客户端来生成答案，但使用answer_model
             if self.search_agent.client:
