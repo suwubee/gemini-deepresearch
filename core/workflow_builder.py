@@ -62,8 +62,9 @@ class WorkflowStep:
 class DynamicWorkflow:
     """动态工作流"""
     
-    def __init__(self, workflow_config: Dict[str, Any]):
+    def __init__(self, workflow_config: Dict[str, Any], steps_config: List[Dict[str, str]]):
         self.config = workflow_config
+        self.steps_config = steps_config
         self.steps = []
         self.current_step_index = 0
         self.context = {}
@@ -82,16 +83,16 @@ class DynamicWorkflow:
         self.context = initial_context or {}
         
         try:
-            for i, step in enumerate(self.steps):
+            for i, step_config in enumerate(self.steps_config):
                 self.current_step_index = i
                 
                 # 更新上下文
-                self.context["current_step"] = step.name
+                self.context["current_step"] = step_config["name"]
                 self.context["step_index"] = i
-                self.context["total_steps"] = len(self.steps)
+                self.context["total_steps"] = len(self.steps_config)
                 
                 # 执行步骤
-                step_result = await step.execute(self.context)
+                step_result = await self._execute_step(step_config, self.context)
                 
                 # 更新上下文
                 if isinstance(step_result, dict):
@@ -115,14 +116,43 @@ class DynamicWorkflow:
         failed_steps = len([s for s in self.steps if s.status == "failed"])
         
         return {
-            "total_steps": len(self.steps),
+            "total_steps": len(self.steps_config),
             "completed_steps": completed_steps,
             "failed_steps": failed_steps,
             "current_step": self.current_step_index,
-            "progress_percentage": (completed_steps / len(self.steps)) * 100 if self.steps else 0,
+            "progress_percentage": (completed_steps / len(self.steps_config)) * 100 if self.steps_config else 0,
             "status": self.status,
             "elapsed_time": (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
         }
+
+    async def _execute_step(self, step_config: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
+        """执行单个步骤"""
+        step_name = step_config["name"]
+        step_description = step_config["description"]
+        
+        print(f"开始执行步骤: {step_name} - {step_description}")
+        
+        # 创建步骤实例
+        step = WorkflowStep(step_name, step_description, self._get_step_function(step_name), **context)
+        
+        try:
+            # 执行步骤
+            step_result = await step.execute(context)
+            
+            print(f"步骤 {step_name} 执行完成")
+            return step_result
+            
+        except Exception as e:
+            print(f"步骤 {step_name} 执行失败: {e}")
+            raise e
+
+    def _get_step_function(self, step_name: str) -> Callable:
+        """获取步骤函数"""
+        # 实现步骤函数获取逻辑
+        # 这里需要根据步骤名称返回相应的函数
+        # 可以使用字典或其他数据结构来映射步骤名称到函数
+        # 这里只是一个示例，实际实现需要根据具体情况来确定
+        return lambda **kwargs: {}  # 临时返回，实际实现需要根据具体情况来确定
 
 
 class DynamicWorkflowBuilder:
@@ -224,24 +254,39 @@ class DynamicWorkflowBuilder:
     
     def _build_workflow_from_analysis(self, analysis: Dict[str, Any], user_query: str) -> DynamicWorkflow:
         """基于分析结果构建工作流"""
-        workflow = DynamicWorkflow(analysis)
+        # 根据分析结果构建工作流步骤
+        steps_config = self._create_workflow_steps(analysis)
         
-        task_type = analysis.get("task_type", "Q&A System")
+        workflow = DynamicWorkflow(
+            workflow_config=analysis,
+            steps_config=steps_config  # 保存步骤配置，而不是实例
+        )
         
-        # 支持中英文任务类型
-        if task_type in ["Deep Research", "深度研究", "Comprehensive Task", "综合任务"]:
-            self._build_research_workflow(workflow, user_query, analysis)
-        elif task_type in ["Code Generation", "代码生成", "代码开发"]:
-            self._build_coding_workflow(workflow, user_query, analysis)
-        elif task_type in ["Data Analysis", "数据分析"]:
-            self._build_data_analysis_workflow(workflow, user_query, analysis)
-        elif task_type in ["Document Writing", "文档写作", "写作任务"]:
-            self._build_writing_workflow(workflow, user_query, analysis)
-        else:  # 默认问答系统
-            self._build_qa_workflow(workflow, user_query, analysis)
-        
-        print(f"构建工作流: 任务类型={task_type}, 步骤数={len(workflow.steps)}")
         return workflow
+
+    def _create_workflow_steps(self, analysis: Dict[str, Any]) -> List[Dict[str, str]]:
+        """根据分析创建工作流步骤的配置"""
+        steps = []
+        task_type = analysis.get("task_type", "问答系统")
+        requires_search = analysis.get("requires_search", True)
+
+        # 支持中英文的深度研究类型判断
+        if (task_type in ["深度研究", "Deep Research"] and requires_search):
+            steps.extend([
+                {"name": "generate_search_queries", "description": "生成初步搜索查询"},
+                {"name": "execute_search", "description": "执行初步网络搜索"},
+                {"name": "analyze_search_results", "description": "分析搜索结果并进行反思"},
+                {"name": "supplementary_search", "description": "根据反思进行补充搜索"},
+            ])
+        elif requires_search:
+            steps.extend([
+                {"name": "simple_search", "description": "执行简单的网络搜索"},
+            ])
+        
+        # 所有工作流都有最终的答案生成步骤
+        steps.append({"name": "generate_final_answer", "description": "生成最终答案"})
+        
+        return steps
     
     def _build_research_workflow(self, workflow: DynamicWorkflow, user_query: str, analysis: Dict):
         """构建研究工作流"""
