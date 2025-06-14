@@ -437,27 +437,20 @@ def research_interface():
                         time.sleep(0.1)
                         st.rerun()
 
-    # 显示最近一次完成的研究结果
-    if st.session_state.research_complete and not st.session_state.is_researching:
-        if st.session_state.current_task:
-            result = st.session_state.current_task
-            if result.get("success"):
-                st.success("🎉 研究完成！")
-                display_final_answer(result)
-                display_search_results(result)
-                display_task_analysis(result.get("workflow_analysis"), result.get("task_id"))
-            else:
-                st.error(f"研究失败: {result.get('error', '未知错误')}")
-        
     # 显示历史研究结果
     if st.session_state.research_results:
+        # 如果有刚完成的研究，显示成功提示
+        if st.session_state.just_completed:
+            st.success("🎉 研究完成！")
+            st.session_state.just_completed = False # 重置标记，避免重复显示
+        
         st.markdown("---")
         st.subheader("📜 研究历史记录")
         for i, result in enumerate(reversed(st.session_state.research_results)):
             task_id = result.get("task_id", f"history_{i}")
             with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({task_id[:20]})", expanded=(i==0)):
                 if result.get("success"):
-                    display_final_answer(result)
+                    display_final_answer(result, index=i)
                     display_search_results(result)
                     display_task_analysis(result.get("workflow_analysis"), result.get("task_id"))
                 else:

@@ -157,10 +157,14 @@ def display_search_results(research_results):
             st.divider()
 
 
-def display_final_answer(research_results):
+def display_final_answer(research_results, index=None):
     """显示最终答案"""
     final_answer = research_results.get("final_answer", "")
     task_id = research_results.get("task_id", "default")
+    
+    # 创建唯一的key后缀
+    key_suffix = f"_{index}" if index is not None else ""
+    unique_key = f"{task_id}{key_suffix}"
     
     if final_answer:
         # 添加标题和操作按钮行
@@ -170,15 +174,15 @@ def display_final_answer(research_results):
             st.markdown("### 🎯 研究结果")
         
         # 切换显示markdown内容的会话状态
-        if f"show_markdown_{task_id}" not in st.session_state:
-            st.session_state[f"show_markdown_{task_id}"] = False
+        if f"show_markdown_{unique_key}" not in st.session_state:
+            st.session_state[f"show_markdown_{unique_key}"] = False
 
         with col2:
-            if st.button("📋 复制报告", help="生成完整的Markdown报告以供复制", key=f"copy_md_{task_id}"):
-                st.session_state[f"show_markdown_{task_id}"] = not st.session_state[f"show_markdown_{task_id}"]
+            if st.button("📋 复制报告", help="生成完整的Markdown报告以供复制", key=f"copy_md_{unique_key}"):
+                st.session_state[f"show_markdown_{unique_key}"] = not st.session_state[f"show_markdown_{unique_key}"]
 
         # 根据状态显示或隐藏markdown预览
-        if st.session_state.get(f"show_markdown_{task_id}", False):
+        if st.session_state.get(f"show_markdown_{unique_key}", False):
             try:
                 markdown_content = create_markdown_content(research_results)
                 st.code(markdown_content, language="markdown")
