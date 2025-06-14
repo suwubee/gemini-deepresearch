@@ -270,7 +270,8 @@ class DynamicWorkflowBuilder:
         task_type = analysis.get("task_type", "问答系统")
         requires_search = analysis.get("requires_search", True)
 
-        if task_type == "深度研究" and requires_search:
+        # 支持中英文的深度研究类型判断
+        if (task_type in ["深度研究", "Deep Research"] and requires_search):
             steps.extend([
                 {"name": "generate_search_queries", "description": "生成初步搜索查询"},
                 {"name": "execute_search", "description": "执行初步网络搜索"},

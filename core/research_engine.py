@@ -218,10 +218,10 @@ class ResearchEngine:
             
             task_type = workflow.config.get("task_type", "Q&A System")
             complexity = workflow.config.get("complexity", "Medium")
-            estimated_steps = len(workflow.steps)  # 使用实际步骤数
+            estimated_steps = len(workflow.steps_config)  # 使用步骤配置数量
             
             print(f"🔍 工作流详情: 类型={task_type}, 复杂度={complexity}, 实际步骤={estimated_steps}")
-            print(f"🔍 步骤列表: {[step.name for step in workflow.steps]}")
+            print(f"🔍 步骤列表: {[step['name'] for step in workflow.steps_config]}")
             
             self._notify_step(f"任务类型: {task_type} (复杂度: {complexity})")
             self._notify_progress(f"工作流构建完成，预计{estimated_steps}步", 30)
@@ -338,8 +338,11 @@ class ResearchEngine:
 
         # 执行初始步骤，直到需要循环的"补充搜索"或"最终答案"
         for step in workflow.steps:
-            if step.name == "supplementary_search" or step.name == "generate_final_answer":
-                break # 结束初始步骤的执行
+            if step.name == "supplementary_search":
+                break # 结束初始步骤的执行，但不跳过simple_search
+            elif step.name == "generate_final_answer":
+                # 如果是最后一步，在循环外单独处理
+                break
             
             result = await self._execute_step_with_context(step, context)
             context.update(result)

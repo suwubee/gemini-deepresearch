@@ -12,9 +12,11 @@ from enum import Enum
 def json_serializable(obj):
     """将对象转换为JSON可序列化的格式"""
     if hasattr(obj, '__dict__'):
-        return obj.__dict__
+        return {k: json_serializable(v) for k, v in obj.__dict__.items()}
     elif isinstance(obj, Enum):
         return obj.value
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
     elif isinstance(obj, (list, tuple)):
         return [json_serializable(item) for item in obj]
     elif isinstance(obj, dict):
