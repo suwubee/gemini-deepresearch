@@ -107,15 +107,14 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
-    # 尝试从LocalStorage加载数据
-    localS = LocalStorage()
-    initial_api_key = localS.getItem("api_key")
-    if initial_api_key:
-        st.session_state.api_key_to_load = initial_api_key
-
-    initial_results = localS.getItem("research_results")
-    if initial_results:
-        st.session_state.research_results = initial_results
+    # 尝试从LocalStorage加载API密钥
+    try:
+        localS = LocalStorage()
+        initial_api_key = localS.getItem("api_key")
+        if initial_api_key and initial_api_key != "null":
+            st.session_state.api_key_to_load = initial_api_key
+    except Exception:
+        pass  # 忽略LocalStorage加载错误
 
 
 def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
@@ -398,9 +397,14 @@ def research_interface():
                         st.session_state.just_completed = True
                         
                         # 保存到LocalStorage
-                        localS = LocalStorage()
-                        serializable_results = json_serializable(st.session_state.research_results)
-                        localS.setItem("research_results", serializable_results)
+                        try:
+                            localS = LocalStorage()
+                            serializable_results = json_serializable(st.session_state.research_results)
+                            # 转换为JSON字符串
+                            json_string = json.dumps(serializable_results, ensure_ascii=False)
+                            localS.setItem("research_results", json_string)
+                        except Exception as e:
+                            st.warning(f"⚠️ 保存历史记录失败: {e}")
 
                     elif item["type"] == "error":
                         st.session_state.is_researching = False
@@ -448,7 +452,18 @@ def research_interface():
         st.subheader("📜 研究历史记录")
         for i, result in enumerate(reversed(st.session_state.research_results)):
             task_id = result.get("task_id", f"history_{i}")
-            with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({task_id[:20]})", expanded=(i==0)):
+            # 从task_id中提取时间戳，如果失败则使用当前时间
+            try:
+                if task_id.startswith("task_") and len(task_id) >= 20:
+                    timestamp_str = task_id[5:20]  # 提取 YYYYMMDD_HHMMSS 部分
+                    timestamp = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                    time_display = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    time_display = "未知时间"
+            except:
+                time_display = "未知时间"
+            
+            with st.expander(f"**{result.get('user_query', '未知查询')}** - {time_display} ({task_id[:20]})", expanded=(i==0)):
                 if result.get("success"):
                     display_final_answer(result, index=i)
                     display_search_results(result)
@@ -551,9 +566,8 @@ def sidebar_content():
         if st.session_state.research_engine:
             st.session_state.research_engine.clear_session()
         
-        # 清除LocalStorage
+        # 清除LocalStorage中的研究结果，但保留API key
         localS = LocalStorage()
-        localS.removeItem("api_key")
         localS.removeItem("research_results")
 
         # 重置所有状态
@@ -561,12 +575,15 @@ def sidebar_content():
             "research_results", "current_task", "progress_messages",
             "is_researching", "research_complete", "research_error",
             "current_step", "progress_percentage", "research_started",
-            "just_completed", "show_markdown_preview"
+            "just_completed", "show_markdown_preview", "history_loaded",
+            "first_load_message_shown"
         ]
         for key in keys_to_reset:
             if key in st.session_state:
                 if isinstance(st.session_state[key], list):
                     st.session_state[key] = []
+                elif isinstance(st.session_state[key], bool):
+                    st.session_state[key] = False
                 else:
                     st.session_state[key] = None
         
@@ -581,6 +598,36 @@ def main():
     """主函数"""
     # 最重要：首先初始化会话状态
     initialize_session_state()
+    
+    # 延迟加载历史记录（确保LocalStorage已准备好）
+    if "history_loaded" not in st.session_state:
+        st.session_state.history_loaded = False
+    
+    if not st.session_state.history_loaded:
+        try:
+            localS = LocalStorage()
+            initial_results = localS.getItem("research_results")
+            if initial_results and initial_results != "null" and len(st.session_state.research_results) == 0:
+                try:
+                    if isinstance(initial_results, str):
+                        parsed_results = json.loads(initial_results)
+                    else:
+                        parsed_results = initial_results
+                    
+                    if isinstance(parsed_results, list) and len(parsed_results) > 0:
+                        st.session_state.research_results = parsed_results
+                        # 只在第一次加载时显示消息，避免每次刷新都显示
+                        if "first_load_message_shown" not in st.session_state:
+                            st.success(f"✅ 已加载 {len(parsed_results)} 条历史记录")
+                            st.session_state.first_load_message_shown = True
+                except (json.JSONDecodeError, TypeError) as e:
+                    st.warning(f"⚠️ 历史记录格式错误，已清空: {e}")
+                    localS.removeItem("research_results")
+            
+            st.session_state.history_loaded = True
+        except Exception as e:
+            st.warning(f"⚠️ 加载历史记录时出错: {e}")
+            st.session_state.history_loaded = True
     
     # 显示侧边栏
     sidebar_content()
