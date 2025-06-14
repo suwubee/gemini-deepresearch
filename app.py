@@ -399,7 +399,8 @@ def research_interface():
                         
                         # 保存到LocalStorage
                         localS = LocalStorage()
-                        localS.setItem("research_results", st.session_state.research_results)
+                        serializable_results = json_serializable(st.session_state.research_results)
+                        localS.setItem("research_results", serializable_results)
 
                     elif item["type"] == "error":
                         st.session_state.is_researching = False
