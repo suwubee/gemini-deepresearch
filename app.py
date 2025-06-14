@@ -302,140 +302,160 @@ def research_interface():
 
     # 初始化线程池执行器
     if "executor" not in st.session_state:
-        st.session_state.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        st.session_state.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-    # 查询输入
-    user_query = st.text_area(
-        "请输入您的研究问题:",
-        height=100,
-        placeholder="例如: 分析2024年人工智能发展趋势...",
-        help="请描述您想要深入研究的问题或主题",
-        disabled=st.session_state.is_researching
-    )
+    # 显示实时进度
+    display_real_time_progress()
 
-    # 研究参数设置
-    col1, col2 = st.columns(2)
-    with col1:
-        effort_level = st.selectbox(
-            "研究强度",
-            ["low", "medium", "high"],
-            index=1,
-            format_func=lambda x: {"low": "🟢 低强度", "medium": "🟡 中强度", "high": "🔴 高强度"}[x],
-            help="低强度: 1查询1轮次, 中强度: 3查询3轮次, 高强度: 5查询10轮次",
+    # 研究输入区域
+    with st.form("research_form"):
+        user_query = st.text_area(
+            "请输入您想要深度研究的问题:",
+            height=100,
+            placeholder="例如：分析人工智能在医疗领域的最新应用和发展趋势",
             disabled=st.session_state.is_researching
         )
-    
-    with col2:
-        effort_to_rounds = {"low": 1, "medium": 3, "high": 10}
-        effort_to_queries = {"low": 1, "medium": 3, "high": 5}
-        max_search_rounds = effort_to_rounds[effort_level]
-        initial_queries = effort_to_queries[effort_level]
-        st.info(f"📊 自动配置: {initial_queries}个初始查询, 最多{max_search_rounds}轮搜索")
         
-        with st.expander("⚙️ 高级设置", expanded=False):
+        col1, col2, col3 = st.columns([2, 2, 1])
+        
+        with col1:
             max_search_rounds = st.slider(
-                "自定义最大搜索轮数", 1, 15, max_search_rounds,
-                help="覆盖默认的搜索轮数设置",
+                "搜索强度",
+                min_value=1,
+                max_value=10,
+                value=3,
+                help="控制搜索的深度和广度，数值越高结果越详细但耗时更长",
                 disabled=st.session_state.is_researching
             )
+        
+        with col2:
+            effort_level = st.selectbox(
+                "研究强度",
+                options=["low", "medium", "high"],
+                index=1,
+                format_func=lambda x: {"low": "🟢 轻度 (快速)", "medium": "🟡 中度 (平衡)", "high": "🔴 深度 (详细)"}[x],
+                help="选择研究的详细程度",
+                disabled=st.session_state.is_researching
+            )
+        
+        with col3:
+            submitted = st.form_submit_button(
+                "🚀 开始研究",
+                disabled=st.session_state.is_researching or not user_query.strip(),
+                use_container_width=True
+            )
+        
+        # 停止按钮
+        if st.session_state.is_researching:
+            if st.form_submit_button("⏹️ 停止研究", use_container_width=True):
+                if "stop_event" in st.session_state and st.session_state.stop_event:
+                    st.session_state.stop_event.set()
+                    st.session_state.is_researching = False
+                    st.info("正在停止研究...")
+                    st.rerun()
 
-    # 开始/停止研究按钮
-    if not st.session_state.is_researching:
-        if st.button("🚀 开始研究", type="primary", disabled=not user_query.strip()):
-            if not st.session_state.research_engine:
-                st.error("研究引擎未初始化，请检查API密钥配置")
-            else:
-                st.session_state.is_researching = True
-                st.session_state.research_complete = False
-                st.session_state.research_error = None
-                st.session_state.progress_messages = ["🚀 研究任务已启动..."]
-                st.session_state.current_step = "初始化..."
-                st.session_state.progress_percentage = 0
-                st.session_state.research_results = []
-                st.session_state.just_completed = False
+    # 处理研究请求
+    if submitted and user_query.strip():
+        if not st.session_state.research_engine:
+            st.error("❌ 请先配置有效的API密钥")
+        else:
+            # 重置状态
+            st.session_state.is_researching = True
+            st.session_state.research_complete = False
+            st.session_state.research_error = None
+            st.session_state.progress_messages = []
+            st.session_state.current_step = ""
+            st.session_state.progress_percentage = 0
+            st.session_state.research_started = True
+            st.session_state.just_completed = False
 
-                q = queue.Queue()
-                stop_event = threading.Event()
-                st.session_state.queue = q
-                st.session_state.stop_event = stop_event
+            # 创建停止事件
+            st.session_state.stop_event = threading.Event()
 
-                st.session_state.current_task_future = st.session_state.executor.submit(
-                    run_research_in_background,
-                    st.session_state.research_engine,
-                    user_query,
-                    max_search_rounds,
-                    effort_level,
-                    q,
-                    stop_event,
-                )
-                st.rerun()
-    else:
-        if st.button("⏹️ 停止研究", type="secondary"):
-            if "stop_event" in st.session_state:
-                st.session_state.stop_event.set()
-            # 状态将在队列处理器中重置
+            # 创建队列用于线程间通信
+            q = queue.Queue()
+            st.session_state.result_queue = q
 
-    # 研究进行中，处理队列更新
-    if st.session_state.is_researching:
-        display_real_time_progress()
+            # 在后台线程中启动研究
+            future = st.session_state.executor.submit(
+                run_research_in_background,
+                st.session_state.research_engine,
+                user_query,
+                max_search_rounds,
+                effort_level,
+                q,
+                st.session_state.stop_event
+            )
+            st.session_state.current_task_future = future
 
-        if "queue" in st.session_state:
-            try:
-                while not st.session_state.queue.empty():
-                    item = st.session_state.queue.get_nowait()
-                    if item["type"] == "progress":
-                        msg = f"[{item['percentage']:.1f}%] {item['message']}"
-                        st.session_state.progress_messages.append(msg)
-                        st.session_state.progress_percentage = item["percentage"]
-                    elif item["type"] == "step":
-                        st.session_state.current_step = item["message"]
-                        st.session_state.progress_messages.append(f"⚡ {item['message']}")
-                    elif item["type"] == "result":
+            st.rerun()
+
+    # 处理后台任务结果
+    if st.session_state.is_researching and "result_queue" in st.session_state:
+        q = st.session_state.result_queue
+        
+        try:
+            # 非阻塞地检查队列
+            while True:
+                item = q.get_nowait()
+                
+                if item["type"] == "progress":
+                    st.session_state.progress_messages.append(item["message"])
+                    st.session_state.progress_percentage = item["percentage"]
+                elif item["type"] == "step":
+                    st.session_state.current_step = item["message"]
+                elif item["type"] == "result":
+                    # 研究完成
+                    if st.session_state.is_researching:
                         st.session_state.is_researching = False
                         st.session_state.research_complete = True
                         st.session_state.current_task = item["data"]
                         st.session_state.research_results.append(item["data"])
                         st.session_state.just_completed = True
                         
+                        # 调试：打印task_id信息
+                        task_id = item["data"].get("task_id", "未知")
+                        st.write(f"🐛 调试信息 - task_id: '{task_id}', 长度: {len(str(task_id))}")
+                        
                         # 保存到LocalStorage
                         localS = LocalStorage()
                         serializable_results = json_serializable(st.session_state.research_results)
                         localS.setItem("research_results", serializable_results)
 
-                    elif item["type"] == "error":
-                        st.session_state.is_researching = False
-                        st.session_state.research_error = item["message"]
-                    elif item["type"] == "info": # 用于处理用户停止等情况
-                        st.session_state.is_researching = False
-                        st.info(item["message"])
+                elif item["type"] == "error":
+                    st.session_state.is_researching = False
+                    st.session_state.research_error = item["message"]
+                elif item["type"] == "info": # 用于处理用户停止等情况
+                    st.session_state.is_researching = False
+                    st.info(item["message"])
 
-                # 如果仍在研究中，安排下一次刷新
-                if st.session_state.is_researching:
+            # 如果仍在研究中，安排下一次刷新
+            if st.session_state.is_researching:
+                time.sleep(0.1)
+                st.rerun()
+            else: # 研究刚刚结束，刷新一次以显示最终结果
+                st.rerun()
+        except queue.Empty:
+            # 队列为空，检查后台任务是否仍在运行
+            if st.session_state.is_researching:
+                future = st.session_state.get("current_task_future")
+                if future and future.done():
+                    # 任务已结束，但队列中没有消息，说明可能发生意外
+                    try:
+                        # 尝试获取结果，这会重新引发在线程中发生的任何异常
+                        future.result() 
+                        # 如果没有异常，但走到了这里，说明逻辑有问题
+                        st.session_state.research_error = "研究意外终止，但未报告明确错误。"
+                    except Exception as e:
+                        # 捕获到后台任务的异常
+                        st.session_state.research_error = f"研究任务在后台发生错误: {e}"
+                    
+                    st.session_state.is_researching = False
+                    st.rerun()
+                else:
+                    # 任务仍在运行，队列为空是正常的，继续轮询
                     time.sleep(0.1)
                     st.rerun()
-                else: # 研究刚刚结束，刷新一次以显示最终结果
-                    st.rerun()
-            except queue.Empty:
-                # 队列为空，检查后台任务是否仍在运行
-                if st.session_state.is_researching:
-                    future = st.session_state.get("current_task_future")
-                    if future and future.done():
-                        # 任务已结束，但队列中没有消息，说明可能发生意外
-                        try:
-                            # 尝试获取结果，这会重新引发在线程中发生的任何异常
-                            future.result() 
-                            # 如果没有异常，但走到了这里，说明逻辑有问题
-                            st.session_state.research_error = "研究意外终止，但未报告明确错误。"
-                        except Exception as e:
-                            # 捕获到后台任务的异常
-                            st.session_state.research_error = f"研究任务在后台发生错误: {e}"
-                        
-                        st.session_state.is_researching = False
-                        st.rerun()
-                    else:
-                        # 任务仍在运行，队列为空是正常的，继续轮询
-                        time.sleep(0.1)
-                        st.rerun()
 
     # 显示历史研究结果
     if st.session_state.research_results:
@@ -448,6 +468,10 @@ def research_interface():
         st.subheader("📜 研究历史记录")
         for i, result in enumerate(reversed(st.session_state.research_results)):
             task_id = result.get("task_id", f"history_{i}")
+            
+            # 调试：打印每个历史记录的task_id信息
+            st.write(f"🐛 历史记录 {i} - task_id: '{task_id}', 长度: {len(str(task_id))}")
+            
             with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({task_id[:8]})", expanded=(i==0)):
                 if result.get("success"):
                     display_final_answer(result)
