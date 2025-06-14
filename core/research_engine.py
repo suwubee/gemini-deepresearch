@@ -450,18 +450,39 @@ class ResearchEngine:
                             # Debug: 记录低强度特殊检查
                             self.debug_logger.log_decision_point(
                                 decision_type="low_effort_content_check",
-                                condition=f"effort_level=low AND current_round({current_round})>=2 AND total_content({total_content})>1000",
-                                result=f"stop_search: {total_content > 1000}",
+                                condition=f"effort_level=low AND current_round({current_round})>=2 AND total_content({total_content})>800",
+                                result=f"stop_search: {total_content > 800}",
                                 context={
                                     "effort_level": effort_level,
                                     "current_round": current_round,
                                     "total_content": total_content,
-                                    "threshold": 1000
+                                    "threshold": 800
                                 }
                             )
                             
-                            if total_content > 1000:  # 低强度的宽松条件
+                            if total_content > 800:  # 低强度的更宽松条件
                                 self._notify_step("✅ 低强度模式：信息量已足够，停止补充搜索")
+                                break
+                        
+                        # 对于所有强度，在第3轮后强制检查
+                        if current_round >= 3:
+                            total_content = sum(len(content) for content in self.state_manager.get_search_content_list())
+                            
+                            # Debug: 记录强制检查
+                            self.debug_logger.log_decision_point(
+                                decision_type="force_content_check",
+                                condition=f"current_round({current_round})>=3 AND total_content({total_content})>1200",
+                                result=f"force_stop: {total_content > 1200}",
+                                context={
+                                    "effort_level": effort_level,
+                                    "current_round": current_round,
+                                    "total_content": total_content,
+                                    "threshold": 1200
+                                }
+                            )
+                            
+                            if total_content > 1200:  # 强制停止条件
+                                self._notify_step("✅ 信息量充足，强制停止补充搜索")
                                 break
                         self._notify_step(f"ℹ️ 已完成默认{default_rounds}轮搜索，但信息不足，继续补充搜索...")
                 
@@ -484,6 +505,7 @@ class ResearchEngine:
                 analyze_step = next((s for s in workflow.steps if s.name == "analyze_search_results"), None)
                 if analyze_step:
                     context["search_round"] = current_round  # 传递搜索轮次给分析步骤
+                    context["effort_level"] = context.get("effort_level", "medium")  # 确保传递effort_level
                     analysis_result = await self._execute_step_with_context(analyze_step, context)
                     context.update(analysis_result)
 
@@ -682,8 +704,16 @@ class ResearchEngine:
             else:
                 # 降级处理：简单的长度判断
                 total_content = sum(len(content) for content in all_research_results)
-                # 对于低强度，更容易满足条件
-                content_threshold = 1500 if current_round >= 2 else 2000
+                effort_level = kwargs.get("effort_level", "medium")
+                
+                # 根据强度和轮次调整阈值
+                if effort_level == "low":
+                    content_threshold = 800 if current_round >= 2 else 1200
+                elif effort_level == "medium":
+                    content_threshold = 1500 if current_round >= 2 else 2000
+                else:  # high
+                    content_threshold = 2000 if current_round >= 3 else 2500
+                
                 reflection_result = {
                     "is_sufficient": total_content > content_threshold or current_round >= total_rounds,
                     "knowledge_gap": "信息充足" if total_content > content_threshold else "需要更多详细信息",
@@ -710,8 +740,16 @@ class ResearchEngine:
             else:
                 # 其他错误的降级处理
                 total_content = sum(len(content) for content in all_research_results)
-                # 如果已经是第2轮或以上，更容易满足条件
-                content_threshold = 1000 if current_round >= 2 else 1500
+                effort_level = kwargs.get("effort_level", "medium")
+                
+                # 错误情况下使用更宽松的阈值
+                if effort_level == "low":
+                    content_threshold = 600 if current_round >= 2 else 1000
+                elif effort_level == "medium":
+                    content_threshold = 1000 if current_round >= 2 else 1500
+                else:  # high
+                    content_threshold = 1500 if current_round >= 3 else 2000
+                
                 reflection_result = {
                     "is_sufficient": total_content > content_threshold or current_round >= total_rounds,
                     "knowledge_gap": "分析失败，使用简单判断",

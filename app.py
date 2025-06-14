@@ -657,14 +657,20 @@ def research_interface():
             if not st.session_state.research_engine:
                 st.error("研究引擎未初始化，请检查API密钥配置")
             else:
+                # 防止重复提交：检查是否已有任务在运行
+                if "current_task_future" in st.session_state and not st.session_state.current_task_future.done():
+                    st.warning("⚠️ 已有研究任务在运行中，请等待完成或先停止当前任务")
+                    return
+                
                 st.session_state.is_researching = True
                 st.session_state.research_complete = False
                 st.session_state.research_error = None
                 st.session_state.progress_messages = ["🚀 研究任务已启动..."]
                 st.session_state.current_step = "初始化..."
                 st.session_state.progress_percentage = 0
-                st.session_state.research_results = []
+                # 注意：不要清空research_results，保留历史记录
                 st.session_state.just_completed = False
+                st.session_state.research_started = True  # 添加启动标记
 
                 q = queue.Queue()
                 stop_event = threading.Event()
@@ -686,7 +692,22 @@ def research_interface():
         if st.button("⏹️ 停止研究", type="secondary"):
             if "stop_event" in st.session_state:
                 st.session_state.stop_event.set()
-            # 状态将在队列处理器中重置
+            
+            # 立即重置研究状态，防止重复提交
+            st.session_state.is_researching = False
+            st.session_state.research_started = False
+            st.session_state.current_step = "已停止"
+            st.session_state.progress_messages.append("🛑 用户手动停止研究")
+            
+            # 等待后台任务完成
+            if "current_task_future" in st.session_state:
+                try:
+                    # 给后台任务一些时间来响应停止信号
+                    st.session_state.current_task_future.result(timeout=2)
+                except:
+                    pass  # 忽略超时或其他异常
+            
+            st.rerun()
 
     # 研究进行中，处理队列更新
     if st.session_state.is_researching:
@@ -738,7 +759,7 @@ def research_interface():
                 if st.session_state.is_researching:
                     time.sleep(0.1)
                     st.rerun()
-                else: # 研究刚刚结束，刷新一次以显示最终结果
+                elif st.session_state.just_completed: # 研究刚刚结束，刷新一次以显示最终结果
                     st.rerun()
             except queue.Empty:
                 # 队列为空，检查后台任务是否仍在运行
