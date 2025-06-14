@@ -341,106 +341,50 @@ class ResearchEngine:
             "search_round": 0
         }
         
-        # 如果是研究工作流，实现动态循环
-        if len(workflow.steps) >= 4:  # 研究工作流通常有5步
-            return await self._execute_research_workflow_with_loops(workflow, initial_context)
-        else:
-            # 简单工作流直接执行
-            result = await workflow.execute(initial_context)
-            return result
+        # 循环执行，直到满足停止条件
+        current_round = 0
+        while current_round < max_search_rounds:
+            current_round += 1
+            self._notify_step(f"第 {current_round}/{max_search_rounds} 轮研究开始...")
+            
+            # 检查是否应该退出循环（例如，已经找到足够信息）
+            if initial_context.get("should_break_loop", False) and current_round > 1:
+                self._notify_step("已收集足够信息，准备生成最终报告...")
+                break
+
+            # 执行工作流中的每一步
+            for step in workflow.steps:
+                if step.name == "generate_search_queries":
+                    # 如果不是第一轮，且没有需要补充搜索的问题，则跳过
+                    if current_round > 1 and not initial_context.get("unanswered_questions"):
+                        self._notify_step("没有需要补充搜索的问题，跳过查询生成。")
+                        continue
+                
+                # 在第一轮之后，如果分析步骤认为可以结束，则跳出
+                if current_round > 1 and step.name == "analyze_search_results":
+                    if initial_context.get("sufficient_information"):
+                        self._notify_step("分析表明信息已足够，准备结束研究。")
+                        initial_context["should_break_loop"] = True
+                        break # 跳出内层 for 循环
+
+                step_result = await self._execute_step_with_context(step, initial_context)
+                initial_context.update(step_result)
+
+            # 如果在内层循环中决定跳出，外层也跳出
+            if initial_context.get("should_break_loop", False):
+                break
+        
+        # 无论循环如何结束，最后都生成最终答案
+        self._notify_step("所有研究轮次完成，正在生成最终报告...")
+        final_answer_step = WorkflowStep(name="generate_final_answer", description="生成最终答案")
+        final_answer_result = await self._generate_final_answer_step(context=initial_context)
+        initial_context.update(final_answer_result)
+
+        return initial_context
     
-    async def _execute_research_workflow_with_loops(self, workflow: DynamicWorkflow, 
-                                                   initial_context: Dict[str, Any]) -> Dict[str, Any]:
-        """执行带循环的研究工作流（参考原始backend的graph结构）"""
-        context = initial_context.copy()
-        
-        # 第1步：生成搜索查询
-        self._notify_step("正在生成搜索查询...")
-        step1_result = await workflow.steps[0].execute(context)
-        context.update(step1_result)
-        
-        # 第2步：执行初始搜索
-        self._notify_step("正在执行初始搜索...")
-        step2_result = await workflow.steps[1].execute(context)
-        context.update(step2_result)
-        
-        # 第3步：分析初始搜索结果（第一次reflection）
-        self._notify_step("正在分析初始搜索结果...")
-        context["search_round"] = 0
-        step3_result = await workflow.steps[2].execute(context)
-        context.update(step3_result)
-        
-        analysis = step3_result.get("analysis", {})
-        
-        # 开始反思循环（参考原始backend的reflection→evaluate_research循环）
-        search_round = 1  # 从1开始，因为第0轮（初始搜索）已经完成
-        max_search_rounds = context.get("max_search_rounds", 3)
-        
-        self._notify_progress(f"完成初始搜索分析", 50)
-        
-        # 添加外部停止检查标记
-        self._stop_research = False
-        
-        while (search_round < max_search_rounds and 
-               not analysis.get("is_sufficient", False) and 
-               not self._stop_research):
-            
-            # 检查外部停止信号
-            if self._stop_research:
-                self._notify_step("🛑 收到停止信号，终止搜索循环")
-                break
-            
-            self._notify_step(f"信息不充足，开始第{search_round+1}轮补充搜索...")
-            
-            # 第4步：补充搜索
-            context["search_round"] = search_round
-            step4_result = await workflow.steps[3].execute(context)
-            context.update(step4_result)
-            
-            # 检查是否有API错误导致的搜索失败
-            if step4_result.get("api_error", False):
-                self._notify_step("⚠️ API错误，停止补充搜索循环")
-                break
-            
-            # 如果没有额外结果，停止循环
-            additional_results = step4_result.get("additional_results", [])
-            if not additional_results:
-                self._notify_step("无法获取更多信息，准备生成最终答案")
-                break
-            
-            self._notify_progress(f"完成第{search_round+1}轮补充搜索", 50 + (search_round * 15))
-            
-            # 再次分析搜索结果
-            self._notify_step(f"正在分析第{search_round+1}轮搜索结果...")
-            context["search_round"] = search_round
-            step3_result = await workflow.steps[2].execute(context)
-            context.update(step3_result)
-            
-            analysis = step3_result.get("analysis", {})
-            
-            # 检查分析步骤是否因API错误而强制终止
-            if analysis.get("api_error", False):
-                self._notify_step("⚠️ 分析阶段API错误，终止搜索循环")
-                break
-            
-            search_round += 1
-            
-            # 检查是否达到最大轮数
-            if search_round >= max_search_rounds:
-                self._notify_step("达到最大搜索轮数，准备生成最终答案")
-                break
-        
-        if analysis.get("is_sufficient", False):
-            self._notify_step("✅ 信息已充足，准备生成最终答案")
-        else:
-            self._notify_step(f"⏱️ 完成{search_round}轮搜索，准备生成最终答案")
-        
-        # 第5步：生成最终答案
-        self._notify_step("正在生成最终答案...")
-        final_step_result = await workflow.steps[-1].execute(context)
-        context.update(final_step_result)
-        
-        return context
+    async def _execute_step_with_context(self, step: WorkflowStep, context: Dict[str, Any]) -> Dict[str, Any]:
+        """执行工作流步骤并返回结果"""
+        return await step.execute(context)
     
     async def _generate_search_queries_step(self, **kwargs) -> Dict[str, Any]:
         """生成搜索查询步骤"""
