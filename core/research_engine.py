@@ -303,34 +303,29 @@ class ResearchEngine:
         print(f"🎯 用户effort级别: {effort_level} → 复杂度: {workflow.config['complexity']}")
     
     def _inject_research_functions(self, workflow: DynamicWorkflow, max_search_rounds: int = 3, effort_level: str = "medium"):
-        """将实际的研究功能注入工作流步骤"""
-        function_map = {
-            "_generate_search_queries_step": self._generate_search_queries_step,
-            "_execute_search_step": self._execute_search_step,
-            "_analyze_search_results_step": self._analyze_search_results_step,
-            "_supplementary_search_step": self._supplementary_search_step,
-            "_generate_final_answer_step": self._generate_final_answer_step,
-            "_simple_search_step": self._simple_search_step,
-            "_generate_simple_answer_step": self._generate_simple_answer_step,
-        }
+        """将实际的研究函数注入到工作流步骤中"""
         
+        function_mapping = {
+            "generate_search_queries": self._generate_search_queries_step,
+            "execute_search": self._execute_search_step,
+            "analyze_search_results": self._analyze_search_results_step,
+            "supplementary_search": self._supplementary_search_step,
+            "generate_final_answer": self._generate_final_answer_step,
+            "simple_search": self._simple_search_step,
+        }
+
         for step in workflow.steps:
-            function_name = step.function.__name__
-            if function_name in function_map:
-                step.function = function_map[function_name]
-                
-                # 为生成搜索查询步骤调整查询数量（参考原始frontend规格）
-                if step.name == "生成搜索查询":
-                    # 根据effort级别设置初始查询数量
-                    if effort_level == "low":
-                        initial_queries = 1
-                    elif effort_level == "high":
-                        initial_queries = 5
-                    else:  # medium
-                        initial_queries = 3
-                    
-                    step.kwargs["num_queries"] = initial_queries
-                    print(f"🔍 effort={effort_level} → 初始查询数量: {initial_queries}")
+            if step.name in function_mapping:
+                step.function = function_mapping[step.name]
+            else:
+                # 如果找不到对应的函数，可以抛出错误或设置一个默认函数
+                raise ValueError(f"未找到工作流步骤 '{step.name}' 对应的实现函数")
+        
+        # 将参数注入到上下文
+        workflow.context.update({
+            "max_search_rounds": max_search_rounds,
+            "effort_level": effort_level,
+        })
     
     async def _execute_workflow(self, workflow: DynamicWorkflow, 
                                user_query: str, max_search_rounds: int) -> Dict[str, Any]:
