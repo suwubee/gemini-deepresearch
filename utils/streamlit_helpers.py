@@ -90,7 +90,7 @@ def display_task_analysis(workflow_analysis, task_id):
     if not workflow_analysis:
         return
     
-    with st.expander("📊 任务分析结果", expanded=False):
+    with st.expander(f"📊 任务分析结果 ({task_id[:8]})", expanded=False):
         col1, col2 = st.columns(2)
         
         with col1:
@@ -115,7 +115,7 @@ def display_search_results(research_results):
     search_results = research_results["search_results"]
     task_id = research_results.get("task_id", "default")
     
-    with st.expander(f"🔍 搜索结果 ({len(search_results)})", expanded=False, key=f"search_results_{task_id}"):
+    with st.expander(f"🔍 搜索结果 ({len(search_results)}) ({task_id[:8]})", expanded=False):
         for i, result in enumerate(search_results, 1):
             with st.container():
                 st.markdown(f"**搜索 {i}: {result.query}**")
@@ -184,9 +184,14 @@ def display_final_answer(research_results):
         
         # 显示分析过程（参考原始backend结构）
         if analysis_process:
-            with st.expander("🔬 分析过程", expanded=False, key=f"analysis_{task_id}"):
+            with st.expander(f"🔬 分析过程 ({task_id[:8]})", expanded=False):
                 # 使用tabs来避免嵌套expander问题
-                tab1, tab2, tab3, tab4 = st.tabs(["搜索查询", "搜索结果", "分析反思", "统计信息"])
+                tab1, tab2, tab3, tab4 = st.tabs([
+                    f"搜索查询_{task_id}", 
+                    f"搜索结果_{task_id}", 
+                    f"分析反思_{task_id}", 
+                    f"统计信息_{task_id}"
+                ])
                 
                 with tab1:
                     # 显示搜索查询
@@ -233,7 +238,7 @@ def display_final_answer(research_results):
         
         # 引用和来源
         if citations or urls:
-            with st.expander("📚 引用和来源", expanded=False, key=f"citations_{task_id}"):
+            with st.expander(f"📚 引用和来源 ({task_id[:8]})", expanded=False):
                 if citations:
                     st.markdown("**引用来源:**")
                     for i, citation in enumerate(citations, 1):
