@@ -111,11 +111,11 @@ def initialize_session_state():
     localS = LocalStorage()
     initial_api_key = localS.getItem("api_key")
     if initial_api_key:
-        st.session_state.api_key_to_load = initial_api_key.get("value")
+        st.session_state.api_key_to_load = initial_api_key
 
     initial_results = localS.getItem("research_results")
     if initial_results:
-        st.session_state.research_results = initial_results.get("value", [])
+        st.session_state.research_results = initial_results
 
 
 def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
