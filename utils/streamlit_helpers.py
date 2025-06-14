@@ -58,9 +58,9 @@ def create_markdown_content(research_results):
     if search_results:
         markdown_content += f"## 📊 研究统计\n\n"
         markdown_content += f"- 搜索次数：{len(search_results)}\n"
-        successful_searches = len([r for r in search_results if r.success])
+        successful_searches = len([r for r in search_results if r.get('success')])
         markdown_content += f"- 成功搜索：{successful_searches}\n"
-        total_citations = sum(len(r.citations) for r in search_results)
+        total_citations = sum(len(r.get('citations', [])) for r in search_results)
         markdown_content += f"- 总引用数：{total_citations}\n\n"
     
     # 添加任务摘要

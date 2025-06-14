@@ -438,7 +438,8 @@ def research_interface():
         st.markdown("---")
         st.subheader("📜 研究历史记录")
         for i, result in enumerate(reversed(st.session_state.research_results)):
-            with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", expanded=(i==0), key=f"history_{result.get('task_id', i)}"):
+            task_id = result.get("task_id", f"history_{i}")
+            with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({task_id[:8]})", expanded=(i==0)):
                 if result.get("success"):
                     display_final_answer(result)
                     display_search_results(result)
