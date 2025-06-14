@@ -376,7 +376,6 @@ class ResearchEngine:
         
         # 无论循环如何结束，最后都生成最终答案
         self._notify_step("所有研究轮次完成，正在生成最终报告...")
-        final_answer_step = WorkflowStep(name="generate_final_answer", description="生成最终答案")
         final_answer_result = await self._generate_final_answer_step(context=initial_context)
         initial_context.update(final_answer_result)
 
