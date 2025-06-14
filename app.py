@@ -14,7 +14,107 @@ from typing import Dict, Any
 from enum import Enum
 import queue
 
-from streamlit_local_storage import LocalStorage
+# from streamlit_local_storage import LocalStorage  # 暂时禁用，有bug
+import streamlit.components.v1 as components
+
+class SafeLocalStorage:
+    """安全的LocalStorage实现，避免undefined key问题"""
+    
+    def __init__(self):
+        self._cache = {}
+    
+    def getItem(self, key, default=None):
+        """从LocalStorage获取数据"""
+        if key in self._cache:
+            return self._cache[key]
+        
+        try:
+            html_code = f"""
+            <script>
+                const value = localStorage.getItem('{key}');
+                if (value !== null) {{
+                    parent.postMessage({{
+                        type: 'localStorage_get',
+                        key: '{key}',
+                        value: value
+                    }}, '*');
+                }} else {{
+                    parent.postMessage({{
+                        type: 'localStorage_get',
+                        key: '{key}',
+                        value: null
+                    }}, '*');
+                }}
+            </script>
+            """
+            
+            # 使用session state作为fallback
+            session_key = f"ls_{key}"
+            if session_key in st.session_state:
+                return st.session_state[session_key]
+            
+            return default
+        except Exception:
+            return default
+    
+    def setItem(self, key, value):
+        """向LocalStorage保存数据"""
+        try:
+            # 缓存到session state
+            session_key = f"ls_{key}"
+            st.session_state[session_key] = value
+            self._cache[key] = value
+            
+            # 尝试保存到浏览器LocalStorage
+            if isinstance(value, str):
+                escaped_value = value.replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n')
+            else:
+                escaped_value = str(value).replace("'", "\\'").replace('"', '\\"')
+            
+            html_code = f"""
+            <script>
+                try {{
+                    localStorage.setItem('{key}', '{escaped_value}');
+                    console.log('Saved to localStorage:', '{key}');
+                }} catch (e) {{
+                    console.error('LocalStorage save error:', e);
+                }}
+            </script>
+            """
+            components.html(html_code, height=0)
+            return True
+        except Exception as e:
+            st.warning(f"保存到LocalStorage失败: {e}")
+            return False
+    
+    def removeItem(self, key):
+        """从LocalStorage删除数据"""
+        try:
+            # 从缓存中删除
+            if key in self._cache:
+                del self._cache[key]
+            
+            # 从session state中删除
+            session_key = f"ls_{key}"
+            if session_key in st.session_state:
+                del st.session_state[session_key]
+            
+            # 从浏览器LocalStorage中删除
+            html_code = f"""
+            <script>
+                try {{
+                    localStorage.removeItem('{key}');
+                    console.log('Removed from localStorage:', '{key}');
+                }} catch (e) {{
+                    console.error('LocalStorage remove error:', e);
+                }}
+            </script>
+            """
+            components.html(html_code, height=0)
+            return True
+        except Exception as e:
+            st.warning(f"从LocalStorage删除失败: {e}")
+            return False
 
 # 导入核心组件
 from core.research_engine import ResearchEngine
@@ -110,8 +210,8 @@ def initialize_session_state():
     # 尝试从LocalStorage加载API密钥
     try:
         if "ls_api_key" not in st.session_state:
-            localS = LocalStorage()
-            initial_api_key = localS.getItem("api_key", key="load_api_key")
+            localS = SafeLocalStorage()
+            initial_api_key = localS.getItem("api_key")
             st.session_state.ls_api_key = initial_api_key
         else:
             initial_api_key = st.session_state.ls_api_key
@@ -148,7 +248,7 @@ def setup_api_key():
     """设置API密钥和模型选择"""
     st.sidebar.header("🔧 配置")
     
-    localS = LocalStorage()
+    localS = SafeLocalStorage()
     
     # 模型选择
     model_name = st.sidebar.selectbox(
@@ -177,7 +277,7 @@ def setup_api_key():
             
             # 如果是新的有效key，则保存到localStorage
             if api_key != api_key_from_storage:
-                localS.setItem("api_key", api_key, key="save_api_key")
+                localS.setItem("api_key", api_key)
                 st.session_state.api_key_to_load = api_key # 更新state
             
             # 显示模型配置详情
@@ -257,7 +357,7 @@ def display_real_time_progress():
 
 
 def run_research_in_background(
-    engine, user_query, max_search_rounds, effort_level, q, stop_event
+    engine, user_query, max_search_rounds, effort_level, num_search_queries, q, stop_event
 ):
     """在后台线程中运行研究任务"""
     try:
@@ -291,7 +391,7 @@ def run_research_in_background(
 
         # 运行异步研究方法
         results = loop.run_until_complete(
-            engine.research(user_query, max_search_rounds, effort_level)
+            engine.research(user_query, max_search_rounds, effort_level, num_search_queries)
         )
         q.put({"type": "result", "data": results})
         
@@ -328,21 +428,40 @@ def research_interface():
             ["low", "medium", "high"],
             index=1,
             format_func=lambda x: {"low": "🟢 低强度", "medium": "🟡 中强度", "high": "🔴 高强度"}[x],
-            help="低强度: 1查询1轮次, 中强度: 3查询3轮次, 高强度: 5查询10轮次",
+            help="低强度: 1轮×3查询, 中强度: 3轮×5查询, 高强度: 5轮×10查询",
             disabled=st.session_state.is_researching
         )
     
     with col2:
-        effort_to_rounds = {"low": 1, "medium": 3, "high": 10}
-        effort_to_queries = {"low": 1, "medium": 3, "high": 5}
-        max_search_rounds = effort_to_rounds[effort_level]
-        initial_queries = effort_to_queries[effort_level]
-        st.info(f"📊 自动配置: {initial_queries}个初始查询, 最多{max_search_rounds}轮搜索")
+        # 根据强度显示配置信息
+        effort_configs = {
+            "low": {"rounds": 1, "queries": 3, "time": "1-3分钟"},
+            "medium": {"rounds": 3, "queries": 5, "time": "4-10分钟"},
+            "high": {"rounds": 5, "queries": 10, "time": "8-20分钟"}
+        }
+        config = effort_configs[effort_level]
+        
+        st.info(f"""
+        📊 **当前配置**
+        - 🔄 搜索轮数: {config['rounds']}轮
+        - 🔍 每轮查询: {config['queries']}个
+        - ⏱️ 预计时间: {config['time']}
+        """)
+        
+        # 设置默认值，但允许用户在高级设置中覆盖
+        max_search_rounds = config['rounds']
+        num_search_queries = config['queries']
         
         with st.expander("⚙️ 高级设置", expanded=False):
             max_search_rounds = st.slider(
-                "自定义最大搜索轮数", 1, 15, max_search_rounds,
+                "自定义最大搜索轮数", 1, 10, config['rounds'],
                 help="覆盖默认的搜索轮数设置",
+                disabled=st.session_state.is_researching
+            )
+            
+            num_search_queries = st.slider(
+                "自定义每轮查询数量", 1, 15, config['queries'],
+                help="覆盖默认的每轮查询数量",
                 disabled=st.session_state.is_researching
             )
     
@@ -372,6 +491,7 @@ def research_interface():
                     user_query,
                     max_search_rounds,
                     effort_level,
+                    num_search_queries,
                     q,
                     stop_event,
                 )
@@ -406,11 +526,11 @@ def research_interface():
                         
                         # 保存到LocalStorage
                         try:
-                            localS = LocalStorage()
+                            localS = SafeLocalStorage()
                             serializable_results = json_serializable(st.session_state.research_results)
                             # 转换为JSON字符串
                             json_string = json.dumps(serializable_results, ensure_ascii=False)
-                            localS.setItem("research_results", json_string, key="save_research_results")
+                            localS.setItem("research_results", json_string)
                         except Exception as e:
                             st.warning(f"⚠️ 保存历史记录失败: {e}")
 
@@ -575,8 +695,8 @@ def sidebar_content():
             st.session_state.research_engine.clear_session()
         
         # 清除LocalStorage中的研究结果，但保留API key
-        localS = LocalStorage()
-        localS.removeItem("research_results", key="clear_research_results")
+        localS = SafeLocalStorage()
+        localS.removeItem("research_results")
 
         # 重置所有状态
         keys_to_reset = [
@@ -613,11 +733,11 @@ def main():
     
     if not st.session_state.history_loaded:
         try:
-            localS = LocalStorage()
+            localS = SafeLocalStorage()
             
             # 使用session state缓存LocalStorage的值，避免重复调用
             if "ls_research_results" not in st.session_state:
-                initial_results = localS.getItem("research_results", key="load_research_results")
+                initial_results = localS.getItem("research_results")
                 st.session_state.ls_research_results = initial_results
                 # 调试信息
                 if st.session_state.get("debug_enabled", False):
@@ -646,7 +766,7 @@ def main():
                             st.session_state.first_load_message_shown = True
                 except (json.JSONDecodeError, TypeError) as e:
                     st.warning(f"⚠️ 历史记录格式错误，已清空: {e}")
-                    localS.removeItem("research_results", key="remove_research_results")
+                    localS.removeItem("research_results")
                     # 清除缓存
                     if "ls_research_results" in st.session_state:
                         del st.session_state.ls_research_results

@@ -80,7 +80,8 @@ class ResearchEngine:
     
     async def research(self, user_query: str, 
                       max_search_rounds: int = 3,
-                      effort_level: str = "medium") -> Dict[str, Any]:
+                      effort_level: str = "medium",
+                      num_search_queries: int = 3) -> Dict[str, Any]:
         """
         执行深度研究
         
@@ -88,6 +89,7 @@ class ResearchEngine:
             user_query: 用户查询
             max_search_rounds: 最大搜索轮数
             effort_level: 努力级别 (low, medium, high)
+            num_search_queries: 初始搜索查询数量
             
         Returns:
             研究结果字典
@@ -103,7 +105,8 @@ class ResearchEngine:
                 input_data={
                     "user_query": user_query,
                     "max_search_rounds": max_search_rounds,
-                    "effort_level": effort_level
+                    "effort_level": effort_level,
+                    "num_search_queries": num_search_queries
                 }
             )
             
@@ -118,6 +121,9 @@ class ResearchEngine:
             # 2. 分析任务并构建工作流
             workflow = await self._analyze_and_build_workflow(user_query, effort_level)
             
+            # 设置搜索查询数量
+            workflow.config["num_search_queries"] = num_search_queries
+            
             # 检查停止信号
             if self._stop_research:
                 return {"success": False, "error": "研究被用户停止"}
@@ -127,7 +133,7 @@ class ResearchEngine:
             
             # 4. 执行工作流
             self.state_manager.update_task_progress(status=TaskStatus.ANALYZING)
-            result = await self._execute_workflow(workflow, user_query, max_search_rounds)
+            result = await self._execute_workflow(workflow, user_query, max_search_rounds, num_search_queries)
             
             # 检查停止信号
             if self._stop_research:
@@ -265,31 +271,37 @@ class ResearchEngine:
             workflow.config["complexity"] = "Low"
             workflow.config["estimated_steps"] = 3
             workflow.config["estimated_time"] = "1-3分钟"
-            workflow.config["max_search_rounds"] = 2  # 低强度最多2轮搜索（初始+1次补充）
+            workflow.config["max_search_rounds"] = 1  # 低强度：1轮搜索
+            workflow.config["default_search_rounds"] = 1
+            workflow.config["queries_per_round"] = 3  # 每轮3个查询
             self.state_manager.update_settings(
-                max_search_results=5,
-                max_iterations=2,
-                search_timeout=15
+                max_search_results=10,
+                max_iterations=1,
+                search_timeout=30
             )
         elif effort_level == "high":
             workflow.config["complexity"] = "High"  
-            workflow.config["estimated_steps"] = 7
-            workflow.config["estimated_time"] = "5-15分钟"
-            workflow.config["max_search_rounds"] = 10  # 高强度最多10轮搜索
+            workflow.config["estimated_steps"] = 8
+            workflow.config["estimated_time"] = "8-20分钟"
+            workflow.config["max_search_rounds"] = 5  # 高强度：5轮搜索
+            workflow.config["default_search_rounds"] = 5
+            workflow.config["queries_per_round"] = 10  # 每轮10个查询
             self.state_manager.update_settings(
-                max_search_results=20,
-                max_iterations=10,
+                max_search_results=50,
+                max_iterations=5,
                 search_timeout=60
             )
         else:  # medium
             workflow.config["complexity"] = "Medium"
-            workflow.config["estimated_steps"] = 5
-            workflow.config["estimated_time"] = "3-8分钟"
-            workflow.config["max_search_rounds"] = 3  # 中等强度最多3轮搜索
+            workflow.config["estimated_steps"] = 6
+            workflow.config["estimated_time"] = "4-10分钟"
+            workflow.config["max_search_rounds"] = 3  # 中等强度：3轮搜索
+            workflow.config["default_search_rounds"] = 3
+            workflow.config["queries_per_round"] = 5  # 每轮5个查询
             self.state_manager.update_settings(
-                max_search_results=10,
+                max_search_results=25,
                 max_iterations=3,
-                search_timeout=30
+                search_timeout=45
             )
         
         print(f"🎯 用户effort级别: {effort_level} → 复杂度: {workflow.config['complexity']}, 最大搜索轮数: {workflow.config['max_search_rounds']}")
@@ -323,7 +335,7 @@ class ResearchEngine:
         workflow.steps = injected_steps
     
     async def _execute_workflow(self, workflow: DynamicWorkflow, 
-                               user_query: str, max_search_rounds: int) -> Dict[str, Any]:
+                               user_query: str, max_search_rounds: int, num_search_queries: int = 3) -> Dict[str, Any]:
         """执行工作流，包含可能的多轮研究"""
         
         # 使用工作流配置中的max_search_rounds，如果没有则使用传入的参数
@@ -331,7 +343,9 @@ class ResearchEngine:
         
         context = {
             "user_query": user_query,
-            "max_search_rounds": effective_max_rounds
+            "max_search_rounds": effective_max_rounds,
+            "num_search_queries": num_search_queries,
+            "queries_per_round": workflow.config.get("queries_per_round", num_search_queries)
         }
         
         print(f"🔄 执行工作流，最大搜索轮数: {effective_max_rounds}")
@@ -351,7 +365,22 @@ class ResearchEngine:
         supplementary_search_step = next((s for s in workflow.steps if s.name == "supplementary_search"), None)
         if supplementary_search_step:
             current_round = 1
+            default_rounds = workflow.config.get("default_search_rounds", 1)
+            
             while current_round < effective_max_rounds:
+                # 检查停止信号
+                if self._stop_research:
+                    self._notify_step("🛑 收到停止指令，终止补充搜索")
+                    break
+                
+                # 如果已经达到默认轮数，检查信息是否充足
+                if current_round >= default_rounds:
+                    if context.get("is_sufficient"):
+                        self._notify_step("✅ 信息已充足，跳过后续补充研究")
+                        break
+                    else:
+                        self._notify_step(f"ℹ️ 已完成默认{default_rounds}轮搜索，但信息不足，继续补充搜索...")
+                
                 # 计算当前轮次的进度
                 base_progress = 60  # 初始搜索完成后的进度
                 round_progress = base_progress + (current_round * 15)  # 每轮增加15%
@@ -359,14 +388,11 @@ class ResearchEngine:
                 self._notify_step(f"🔄 第 {current_round+1}/{effective_max_rounds} 轮补充研究开始...")
                 self._notify_progress(f"执行第 {current_round+1} 轮补充搜索", round_progress)
                 
-                # 如果分析后认为信息充足，则跳出循环
-                if context.get("is_sufficient"):
-                    self._notify_step("✅ 信息已充足，跳过后续补充研究")
-                break
-            
                 # 执行补充搜索，传递轮次信息
                 context["current_round"] = current_round + 1
                 context["total_rounds"] = effective_max_rounds
+                context["default_rounds"] = default_rounds
+                context["queries_per_round"] = workflow.config.get("queries_per_round", num_search_queries)
                 result = await self._execute_step_with_context(supplementary_search_step, context)
                 context.update(result)
                 
@@ -400,9 +426,11 @@ class ResearchEngine:
     async def _generate_search_queries_step(self, **kwargs) -> Dict[str, Any]:
         """生成搜索查询步骤"""
         user_query = kwargs.get("user_query", "")
-        num_queries = kwargs.get("num_queries", 3)
+        # 优先使用workflow配置的查询数量
+        workflow_queries = kwargs.get("queries_per_round")
+        num_queries = workflow_queries or kwargs.get("num_search_queries", kwargs.get("num_queries", 3))
         
-        self._notify_step("正在生成搜索查询...")
+        self._notify_step(f"正在生成 {num_queries} 个搜索查询...")
         
         queries = await self.search_agent.generate_search_queries(user_query, num_queries)
         
@@ -572,35 +600,85 @@ class ResearchEngine:
         }
     
     async def _supplementary_search_step(self, **kwargs) -> Dict[str, Any]:
-        """补充搜索步骤 - 参考原始backend的多轮搜索逻辑"""
+        """补充搜索步骤 - 基于上下文生成新的搜索查询"""
         analysis = kwargs.get("analysis", {})
         user_query = kwargs.get("user_query", "")
         search_round = kwargs.get("search_round", 0)
-        current_round = kwargs.get("current_round", search_round + 1)  # 获取当前轮次
+        current_round = kwargs.get("current_round", search_round + 1)
         total_rounds = kwargs.get("total_rounds", kwargs.get("max_search_rounds", 3))
+        queries_per_round = kwargs.get("queries_per_round", 3)
         
-        # 检查是否需要继续搜索（参考原始backend的evaluate_research逻辑）
+        # 检查是否需要继续搜索
         if analysis.get("is_sufficient", True):
             self._notify_step("✅ 信息已充足，跳过补充搜索")
             return {"additional_results": [], "continue_search": False}
         
-        # 获取follow_up_queries
-        follow_up_queries = analysis.get("follow_up_queries", [])
-        if not follow_up_queries:
-            follow_up_queries = [f"{user_query} 详细分析"]
-        
         self._notify_step(f"🔍 第 {current_round}/{total_rounds} 轮补充搜索中...")
         
-        # 使用传递的进度信息，而不是重新计算
+        # 获取之前轮次的搜索结果作为上下文
+        previous_results = self.state_manager.get_successful_search_results()
+        previous_context = ""
+        if previous_results:
+            context_summaries = []
+            for result in previous_results[-5:]:  # 只取最近5个结果作为上下文
+                if result.content:
+                    context_summaries.append(f"已搜索: {result.query}\n结果摘要: {result.content[:200]}...")
+            previous_context = "\n\n".join(context_summaries)
+        
+        # 基于上下文和分析结果生成新的搜索查询
+        follow_up_queries = analysis.get("follow_up_queries", [])
+        if not follow_up_queries and previous_context:
+            # 如果没有明确的follow_up_queries，基于上下文生成
+            self._notify_step("🤔 基于已有信息生成补充搜索查询...")
+            try:
+                from utils.prompts import PromptTemplates
+                context_prompt = f"""
+基于用户问题: {user_query}
+
+已有搜索结果:
+{previous_context}
+
+分析结果显示信息不足。请生成{queries_per_round}个补充搜索查询，用于获取缺失的信息。
+查询应该:
+1. 与已有结果互补，避免重复
+2. 针对具体的信息缺口
+3. 使用不同的关键词和角度
+
+请直接返回查询列表，每行一个查询。
+"""
+                
+                if self.search_agent.client:
+                    response = self.search_agent.client.models.generate_content(
+                        model=self.model_config.get_model_for_task("search"),
+                        contents=context_prompt,
+                        config={"temperature": 0.7, "max_output_tokens": 500}
+                    )
+                    generated_queries = [q.strip() for q in response.text.strip().split('\n') if q.strip()]
+                    follow_up_queries = generated_queries[:queries_per_round]
+                    
+            except Exception as e:
+                self._notify_step(f"⚠️ 自动生成查询失败，使用默认查询: {str(e)}")
+        
+        # 如果仍然没有查询，使用默认策略
+        if not follow_up_queries:
+            follow_up_queries = [
+                f"{user_query} 详细分析",
+                f"{user_query} 最新发展",
+                f"{user_query} 相关案例"
+            ][:queries_per_round]
+        
+        # 限制查询数量
+        follow_up_queries = follow_up_queries[:queries_per_round]
+        
         base_progress = 60 + ((current_round - 1) * 15)
         self._notify_progress(f"第 {current_round} 轮补充搜索", base_progress)
         
         additional_results = []
         
-        # 执行所有follow_up_queries（参考原始backend逻辑）
-        for i, query in enumerate(follow_up_queries[:2]):  # 限制每轮最多2个查询
-            query_progress = base_progress + (i * 5)  # 每个查询增加5%进度
-            self._notify_step(f"🔎 补充查询 {i+1}/{len(follow_up_queries[:2])}: {query[:50]}...")
+        # 执行所有补充查询
+        for i, query in enumerate(follow_up_queries):
+            query_progress = base_progress + (i * (10 // len(follow_up_queries)))
+            self._notify_step(f"🔎 补充查询 {i+1}/{len(follow_up_queries)}: {query[:50]}...")
             self._notify_progress(f"执行补充查询 {i+1}", query_progress)
             
             try:
@@ -609,7 +687,7 @@ class ResearchEngine:
                 if result.get("success"):
                     self.state_manager.add_search_result(query, result)
                     
-                    # 保存到分析过程，标明轮次
+                    # 保存到分析过程，标明轮次和上下文关联
                     web_research_content = f"第{current_round}轮补充查询: {query}\n内容: {result.get('content', '')}"
                     if result.get('citations'):
                         citations_list = result.get('citations', []) or []
