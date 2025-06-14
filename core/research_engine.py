@@ -698,25 +698,24 @@ class ResearchEngine:
                     context=f"第{current_round}轮反思分析"
                 )
                 
-                response = self.search_agent.client.models.generate_content(
-                    model=reflection_model,
-                    contents=reflection_prompt,
-                    config={
-                        "temperature": 0.3,
-                        "max_output_tokens": max_tokens
-                    }
+                response_text = await self._generate_content_unified(
+                    self.search_agent.client,
+                    reflection_prompt,
+                    reflection_model,
+                    temperature=0.3,
+                    max_tokens=max_tokens
                 )
                 
                 # Debug: 记录反思分析API响应
                 self.debug_logger.log_api_response(
                     request_id=reflection_request_id,
-                    response_text=response.text
+                    response_text=response_text
                 )
                 
                 # 解析AI反思结果
                 import json
                 try:
-                    reflection_result = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
+                    reflection_result = json.loads(response_text.strip().replace('```json', '').replace('```', ''))
                 except:
                     # 降级处理
                     reflection_result = {
@@ -878,12 +877,14 @@ class ResearchEngine:
 """
                 
                 if self.search_agent.client:
-                    response = self.search_agent.client.models.generate_content(
-                        model=self.model_config.get_model_for_task("search"),
-                        contents=context_prompt,
-                        config={"temperature": 0.7, "max_output_tokens": 500}
+                    response_text = await self._generate_content_unified(
+                        self.search_agent.client,
+                        context_prompt,
+                        self.model_config.get_model_for_task("search"),
+                        temperature=0.7,
+                        max_tokens=500
                     )
-                    generated_queries = [q.strip() for q in response.text.strip().split('\n') if q.strip()]
+                    generated_queries = [q.strip() for q in response_text.strip().split('\n') if q.strip()]
                     follow_up_queries = generated_queries[:queries_per_round]
                     
             except Exception as e:
@@ -1047,19 +1048,29 @@ class ResearchEngine:
                     context="生成最终答案"
                 )
                 
-                response = self.search_agent.client.models.generate_content(
-                    model=answer_model,
-                    contents=synthesis_prompt,
-                    config={
-                        "temperature": 0.3,
-                        "max_output_tokens": max_tokens
-                    }
-                )
+                # 根据客户端类型调用不同的方法
+                if hasattr(self.search_agent.client, 'models'):
+                    # Google GenAI客户端
+                    response = self.search_agent.client.models.generate_content(
+                        model=answer_model,
+                        contents=synthesis_prompt,
+                        config={
+                            "temperature": 0.3,
+                            "max_output_tokens": max_tokens
+                        }
+                    )
+                    final_answer = response.text
+                else:
+                    # OpenAI兼容客户端
+                    response = await self.search_agent.client.generate_content(
+                        prompt=synthesis_prompt,
+                        temperature=0.3,
+                        max_tokens=max_tokens
+                    )
+                    final_answer = response.text if response.success else f"生成答案失败: {response.error}"
                 
                 self._notify_step("AI模型响应完成，正在处理结果...")
                 self._notify_progress("答案生成完成", 95)
-                
-                final_answer = response.text
                 
                 # Debug: 记录最终答案生成API响应
                 self.debug_logger.log_api_response(
@@ -1132,15 +1143,13 @@ Note: This information is gathered from web searches. Please verify for accuracy
                     answer_model = self.model_config.get_model_for_task("answer")
                     max_tokens = self.model_config.get_token_limits("answer")
                     
-                    response = self.search_agent.client.models.generate_content(
-                        model=answer_model,
-                        contents=synthesis_prompt,
-                        config={
-                            "temperature": 0.3,
-                            "max_output_tokens": max_tokens
-                        }
+                    answer = await self._generate_content_unified(
+                        self.search_agent.client,
+                        synthesis_prompt,
+                        answer_model,
+                        temperature=0.3,
+                        max_tokens=max_tokens
                     )
-                    answer = response.text
                 else:
                     # 降级处理
                     answer = f"""# Answer to: {user_query}
@@ -1242,4 +1251,29 @@ Note: This information is gathered from web searches. Please verify for accuracy
         if isinstance(preferred_mode, str):
             preferred_mode = APIMode(preferred_mode)
         
-        return cls(api_key, model_name, preferred_mode) 
+        return cls(api_key, model_name, preferred_mode)
+
+    async def _generate_content_unified(self, client, prompt: str, model: str = None, temperature: float = 0.3, max_tokens: int = 4096) -> str:
+        """统一的内容生成方法，兼容不同客户端类型"""
+        try:
+            if hasattr(client, 'models'):
+                # Google GenAI客户端
+                response = client.models.generate_content(
+                    model=model or self.model_config.get_model_for_task("search"),
+                    contents=prompt,
+                    config={
+                        "temperature": temperature,
+                        "max_output_tokens": max_tokens
+                    }
+                )
+                return response.text
+            else:
+                # OpenAI兼容客户端
+                response = await client.generate_content(
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                return response.text if response.success else f"生成失败: {response.error}"
+        except Exception as e:
+            return f"调用失败: {str(e)}" 

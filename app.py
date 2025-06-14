@@ -191,6 +191,13 @@ TASK_MODEL_MAPPING = {
     "answer": "答案生成模型"
 }
 
+# 搜索模式选项
+SEARCH_MODE_OPTIONS = {
+    "genai": "🔵 GenAI (推荐，支持搜索)",
+    "openai": "🟠 OpenAI兼容 (无搜索功能)",
+    "auto": "🔄 自动选择"
+}
+
 # API模式选项
 API_MODE_OPTIONS = {
     APIMode.GENAI: "🔵 Google GenAI SDK (推荐)",
@@ -270,6 +277,7 @@ def initialize_session_state():
             'reflection': 'gemini-2.5-flash-preview-05-20', 
             'answer': 'gemini-2.5-pro-preview-06-05'
         },
+        "search_mode": "genai",  # 搜索模型独立的模式配置
         "custom_models": [],
         "config_changed": False
     }
@@ -700,6 +708,46 @@ def setup_api_configuration():
         if gemini_api_key:
             st.sidebar.success("✅ Gemini API密钥已设置")
     
+    # 智能API密钥提示
+    st.sidebar.divider()
+    
+    # 检查当前配置需要哪些API密钥
+    needs_gemini = False
+    needs_openai = False
+    
+    # 检查主API模式
+    if st.session_state.api_mode == APIMode.GENAI:
+        needs_gemini = True
+    elif st.session_state.api_mode == APIMode.OPENAI:
+        needs_openai = True
+    
+    # 检查搜索模式
+    search_mode = st.session_state.get("search_mode", "genai")
+    if search_mode == "genai":
+        needs_gemini = True
+    elif search_mode == "openai":
+        needs_openai = True
+    
+    # 检查任务模型配置
+    for task_key, model_name in st.session_state.task_models.items():
+        if model_name in AVAILABLE_MODELS:
+            needs_gemini = True
+        else:
+            # 自定义模型，假设是OpenAI兼容
+            needs_openai = True
+    
+    # 显示API密钥需求提示
+    if needs_gemini or needs_openai:
+        st.sidebar.markdown("**🔑 API密钥需求**")
+        
+        if needs_gemini:
+            gemini_status = "✅" if st.session_state.get("api_key_to_load") else "❌"
+            st.sidebar.text(f"{gemini_status} Gemini API密钥")
+        
+        if needs_openai:
+            openai_status = "✅" if st.session_state.openai_config.get("api_key") else "❌"
+            st.sidebar.text(f"{openai_status} OpenAI兼容API密钥")
+    
     return setup_model_configuration()
 
 
@@ -728,6 +776,31 @@ def setup_model_configuration():
     # 高级模型配置
     with st.sidebar.expander("🔧 高级模型配置", expanded=False):
         st.write("为不同任务配置专用模型:")
+        
+        # 搜索模式配置（特殊处理）
+        st.markdown("**🔍 搜索配置**")
+        search_mode = st.selectbox(
+            "搜索模式",
+            options=list(SEARCH_MODE_OPTIONS.keys()),
+            index=list(SEARCH_MODE_OPTIONS.keys()).index(st.session_state.get("search_mode", "genai")),
+            format_func=lambda x: SEARCH_MODE_OPTIONS[x],
+            help="搜索模式：GenAI支持grounding搜索，OpenAI兼容模式无搜索功能",
+            key="search_mode_selector"
+        )
+        
+        if search_mode != st.session_state.get("search_mode", "genai"):
+            st.session_state.search_mode = search_mode
+            st.session_state.config_changed = True
+            save_config_to_storage()
+        
+        # 根据搜索模式显示警告
+        if search_mode == "openai":
+            st.warning("⚠️ OpenAI模式下搜索功能将降级到基于知识库的回答")
+        elif search_mode == "genai":
+            st.success("✅ GenAI模式支持完整的grounding搜索功能")
+        
+        st.divider()
+        st.write("任务模型配置:")
         
         for task_key, task_name in TASK_MODEL_MAPPING.items():
             current_model = st.session_state.task_models.get(task_key, main_model)
