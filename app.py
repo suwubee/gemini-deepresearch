@@ -8,11 +8,11 @@ import asyncio
 import json
 import time
 import threading
-import concurrent.futures
+import queue
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, Any
 from enum import Enum
-import queue
 
 from streamlit_local_storage import LocalStorage
 
@@ -108,14 +108,36 @@ def initialize_session_state():
             st.session_state[key] = default_value
 
     # 尝试从LocalStorage加载数据
-    localS = LocalStorage()
-    initial_api_key = localS.getItem("api_key")
-    if initial_api_key:
-        st.session_state.api_key_to_load = initial_api_key
+    try:
+        localS = LocalStorage()
+        
+        # 加载API密钥
+        initial_api_key = localS.getItem("api_key")
+        if initial_api_key and initial_api_key.get("value"):
+            st.session_state.api_key_to_load = initial_api_key["value"]
 
-    initial_results = localS.getItem("research_results")
-    if initial_results:
-        st.session_state.research_results = initial_results
+        # 加载研究历史记录
+        initial_results = localS.getItem("research_results")
+        if initial_results and initial_results.get("value"):
+            try:
+                # 确保加载的数据是列表格式
+                loaded_results = initial_results["value"]
+                if isinstance(loaded_results, list) and loaded_results:
+                    st.session_state.research_results = loaded_results
+                    # 只在debug模式下显示加载信息
+                    if st.session_state.get("debug_enabled", False):
+                        st.success(f"✅ 已加载 {len(loaded_results)} 条研究历史记录")
+            except Exception as e:
+                if st.session_state.get("debug_enabled", False):
+                    st.error(f"解析LocalStorage研究历史数据失败: {e}")
+                st.session_state.research_results = []
+            
+    except Exception as e:
+        if st.session_state.get("debug_enabled", False):
+            st.error(f"从LocalStorage加载数据失败: {e}")
+        # 确保有默认值
+        if "research_results" not in st.session_state:
+            st.session_state.research_results = []
 
 
 def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
@@ -153,13 +175,13 @@ def setup_api_key():
     )
     
     # 优先使用 state 中预加载的 key
-    api_key_from_storage = st.session_state.get("api_key_to_load")
+    api_key_from_storage = st.session_state.get("api_key_to_load", "")
 
     # 如果没有从secrets获取到，让用户输入
     api_key = st.sidebar.text_input(
         "Gemini API Key",
         type="password",
-        value=api_key_from_storage or "",
+        value=api_key_from_storage,
         help="请输入您的 Google Gemini API 密钥"
     )
     
@@ -170,8 +192,12 @@ def setup_api_key():
             
             # 如果是新的有效key，则保存到localStorage
             if api_key != api_key_from_storage:
-                localS.setItem("api_key", api_key)
-                st.session_state.api_key_to_load = api_key # 更新state
+                try:
+                    localS.setItem("api_key", api_key)
+                    st.session_state.api_key_to_load = api_key # 更新state
+                    st.sidebar.info("🔐 API密钥已保存到浏览器")
+                except Exception as e:
+                    st.sidebar.warning(f"保存API密钥失败: {e}")
             
             # 显示模型配置详情
             if st.session_state.research_engine:
@@ -222,6 +248,8 @@ def setup_api_key():
         else:
             st.session_state.api_key_validated = False
             st.sidebar.error("❌ API密钥验证失败")
+    else:
+        st.session_state.api_key_validated = False
     
     return st.session_state.api_key_validated
 
@@ -302,7 +330,7 @@ def research_interface():
 
     # 初始化线程池执行器
     if "executor" not in st.session_state:
-        st.session_state.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        st.session_state.executor = ThreadPoolExecutor(max_workers=1)
 
     # 显示实时进度
     display_real_time_progress()
@@ -316,7 +344,7 @@ def research_interface():
             disabled=st.session_state.is_researching
         )
         
-        col1, col2, col3 = st.columns([2, 2, 1])
+        col1, col2 = st.columns([1, 1])
         
         with col1:
             max_search_rounds = st.slider(
@@ -338,24 +366,37 @@ def research_interface():
                 disabled=st.session_state.is_researching
             )
         
-        with col3:
-            submitted = st.form_submit_button(
-                "🚀 开始研究",
-                disabled=st.session_state.is_researching or not user_query.strip(),
-                use_container_width=True
-            )
+        # 按钮区域 - 使用更好的布局
+        st.markdown("---")
+        col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
         
-        # 停止按钮
-        if st.session_state.is_researching:
-            if st.form_submit_button("⏹️ 停止研究", use_container_width=True):
-                if "stop_event" in st.session_state and st.session_state.stop_event:
-                    st.session_state.stop_event.set()
-                    st.session_state.is_researching = False
-                    st.info("正在停止研究...")
-                    st.rerun()
+        with col_btn2:  # 居中放置按钮
+            if not st.session_state.is_researching:
+                # 检查是否有API密钥和用户输入
+                button_disabled = not st.session_state.get("api_key_validated", False) or not user_query.strip()
+                submitted = st.form_submit_button(
+                    "🚀 开始研究",
+                    disabled=button_disabled,
+                    use_container_width=True,
+                    type="primary"
+                )
+                
+                # 显示提示信息
+                if not st.session_state.get("api_key_validated", False):
+                    st.error("⚠️ 请先在左侧配置API密钥")
+                elif not user_query.strip():
+                    st.info("💡 请输入研究问题")
+            else:
+                # 停止按钮
+                if st.form_submit_button("⏹️ 停止研究", use_container_width=True, type="secondary"):
+                    if "stop_event" in st.session_state and st.session_state.stop_event:
+                        st.session_state.stop_event.set()
+                        st.session_state.is_researching = False
+                        st.info("正在停止研究...")
+                        st.rerun()
 
     # 处理研究请求
-    if submitted and user_query.strip():
+    if 'submitted' in locals() and submitted and user_query.strip():
         if not st.session_state.research_engine:
             st.error("❌ 请先配置有效的API密钥")
         else:
@@ -395,8 +436,8 @@ def research_interface():
         q = st.session_state.result_queue
         
         try:
-            # 非阻塞地检查队列
-            while True:
+            # 非阻塞地检查队列，处理所有可用的消息
+            while not q.empty():
                 item = q.get_nowait()
                 
                 if item["type"] == "progress":
@@ -406,21 +447,24 @@ def research_interface():
                     st.session_state.current_step = item["message"]
                 elif item["type"] == "result":
                     # 研究完成
-                    if st.session_state.is_researching:
-                        st.session_state.is_researching = False
-                        st.session_state.research_complete = True
-                        st.session_state.current_task = item["data"]
-                        st.session_state.research_results.append(item["data"])
-                        st.session_state.just_completed = True
-                        
-                        # 调试：打印task_id信息
-                        task_id = item["data"].get("task_id", "未知")
-                        st.write(f"🐛 调试信息 - task_id: '{task_id}', 长度: {len(str(task_id))}")
-                        
-                        # 保存到LocalStorage
+                    st.session_state.is_researching = False
+                    st.session_state.research_complete = True
+                    st.session_state.current_task = item["data"]
+                    st.session_state.research_results.append(item["data"])
+                    st.session_state.just_completed = True
+                    
+                    # 保存到LocalStorage - 修复序列化问题
+                    try:
                         localS = LocalStorage()
                         serializable_results = json_serializable(st.session_state.research_results)
                         localS.setItem("research_results", serializable_results)
+                        # 只在debug模式下显示保存信息
+                        if st.session_state.get("debug_enabled", False):
+                            task_id = item["data"].get("task_id", "未知")
+                            st.write(f"🐛 调试信息 - task_id: '{task_id}', 长度: {len(str(task_id))}")
+                            st.write(f"🐛 保存到LocalStorage成功，共{len(st.session_state.research_results)}条记录")
+                    except Exception as e:
+                        st.error(f"保存到LocalStorage失败: {e}")
 
                 elif item["type"] == "error":
                     st.session_state.is_researching = False
@@ -433,8 +477,10 @@ def research_interface():
             if st.session_state.is_researching:
                 time.sleep(0.1)
                 st.rerun()
-            else: # 研究刚刚结束，刷新一次以显示最终结果
+            elif st.session_state.just_completed:
+                # 研究刚刚结束，刷新一次以显示最终结果
                 st.rerun()
+                
         except queue.Empty:
             # 队列为空，检查后台任务是否仍在运行
             if st.session_state.is_researching:
@@ -469,8 +515,9 @@ def research_interface():
         for i, result in enumerate(reversed(st.session_state.research_results)):
             task_id = result.get("task_id", f"history_{i}")
             
-            # 调试：打印每个历史记录的task_id信息
-            st.write(f"🐛 历史记录 {i} - task_id: '{task_id}', 长度: {len(str(task_id))}")
+            # 只在debug模式下显示调试信息
+            if st.session_state.get("debug_enabled", False):
+                st.write(f"🐛 历史记录 {i} - task_id: '{task_id}', 长度: {len(str(task_id))}")
             
             with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({task_id[:8]})", expanded=(i==0)):
                 if result.get("success"):
@@ -576,9 +623,14 @@ def sidebar_content():
             st.session_state.research_engine.clear_session()
         
         # 清除LocalStorage
-        localS = LocalStorage()
-        localS.removeItem("api_key")
-        localS.removeItem("research_results")
+        try:
+            localS = LocalStorage()
+            localS.removeItem("research_results")
+            # 不清除API密钥，让用户保持登录状态
+            # localS.removeItem("api_key")
+            st.sidebar.info("🗑️ 浏览器缓存已清除")
+        except Exception as e:
+            st.sidebar.warning(f"清除浏览器缓存失败: {e}")
 
         # 重置所有状态
         keys_to_reset = [
@@ -597,7 +649,7 @@ def sidebar_content():
         if "current_research_id" in st.session_state:
             del st.session_state.current_research_id
         
-        st.sidebar.success("会话已清空")
+        st.sidebar.success("✅ 会话已清空")
         st.rerun()
 
 
