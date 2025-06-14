@@ -46,9 +46,9 @@ def create_markdown_content(research_results):
     citations = research_results.get("citations", [])
     if citations:
         markdown_content += "## 📚 引用来源\n\n"
-        for i, citation in enumerate(citations, 1):
+        for i, citation in enumerate(citations[:10], 1):
+            title = citation.get("title", f"来源 {i}")
             url = citation.get("url", "#")
-            title = citation.get("title", "未知标题")
             markdown_content += f"{i}. [{title}]({url})\n"
         markdown_content += "\n"
     
@@ -97,7 +97,7 @@ def display_task_analysis(workflow_analysis, task_id):
     if not workflow_analysis:
         return
     
-    st.markdown(f"### 📊 任务分析结果 ({task_id[:8]})")
+    st.markdown(f"### 📊 任务分析结果 ({task_id[:20]})")
     col1, col2 = st.columns(2)
     
     with col1:
@@ -122,7 +122,7 @@ def display_search_results(research_results):
     search_results = research_results["search_results"]
     task_id = research_results.get("task_id", "default")
     
-    st.markdown(f"### 🔍 搜索结果 ({len(search_results)}) ({task_id[:8]})")
+    st.markdown(f"### 🔍 搜索结果 ({len(search_results)}) ({task_id[:20]})")
     for i, result in enumerate(search_results, 1):
         with st.container():
             # 使用字典访问方式而不是对象属性访问
@@ -202,7 +202,7 @@ def display_final_answer(research_results):
         # 显示分析过程（参考原始backend结构）
         if analysis_process:
             # 使用容器和tabs来避免嵌套expander问题
-            st.markdown(f"### 🔬 分析过程 ({task_id[:8]})")
+            st.markdown(f"### 🔬 分析过程 ({task_id[:20]})")
             tab1, tab2, tab3, tab4 = st.tabs([
                 "搜索查询", 
                 "搜索结果", 
@@ -255,7 +255,7 @@ def display_final_answer(research_results):
         
         # 引用和来源
         if citations or urls:
-            st.markdown(f"### 📚 引用和来源 ({task_id[:8]})")
+            st.markdown(f"### 📚 引用和来源 ({task_id[:20]})")
             if citations:
                 st.markdown("**引用来源:**")
                 for i, citation in enumerate(citations, 1):
@@ -271,4 +271,4 @@ def display_final_answer(research_results):
                 st.markdown("**相关链接:**")
                 urls_list = urls or []
                 for url in urls_list[:10]:
-                    st.markdown(f"- {url}") 
+                    st.markdown(f"- {url}")

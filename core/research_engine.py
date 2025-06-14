@@ -652,15 +652,11 @@ class ResearchEngine:
         }
     
     async def _generate_final_answer_step(self, **kwargs) -> Dict[str, Any]:
-        """
-        生成最终答案
-        这是工作流的最后一步
-        """
-        context = kwargs.get("context", {})
-        self._notify_step("正在综合所有信息，生成最终研究报告...")
-        self._notify_progress("生成最终答案", 95)
+        """生成最终答案步骤"""
+        user_query = kwargs.get("user_query", "")
         
-        user_query = context.get("user_query")
+        self._notify_step("正在生成最终答案...")
+        self._notify_progress("综合信息生成答案", 90)
         
         # 获取所有搜索结果
         all_results = self.state_manager.get_successful_search_results()

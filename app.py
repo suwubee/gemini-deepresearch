@@ -156,12 +156,12 @@ def setup_api_key():
     api_key_from_storage = st.session_state.get("api_key_to_load")
     
     # 如果没有从secrets获取到，让用户输入
-        api_key = st.sidebar.text_input(
-            "Gemini API Key",
-            type="password",
+    api_key = st.sidebar.text_input(
+        "Gemini API Key",
+        type="password",
         value=api_key_from_storage or "",
-            help="请输入您的 Google Gemini API 密钥"
-        )
+        help="请输入您的 Google Gemini API 密钥"
+    )
     
     if api_key:
         if validate_and_setup_engine(api_key, model_name):
@@ -255,9 +255,9 @@ def run_research_in_background(
     """在后台线程中运行研究任务"""
     try:
         # 为这个线程创建一个新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         def progress_callback(message, percentage):
             if stop_event.is_set():
                 engine.stop_research()
@@ -385,18 +385,18 @@ def research_interface():
                     item = st.session_state.queue.get_nowait()
                     if item["type"] == "progress":
                         msg = f"[{item['percentage']:.1f}%] {item['message']}"
-                st.session_state.progress_messages.append(msg)
+                        st.session_state.progress_messages.append(msg)
                         st.session_state.progress_percentage = item["percentage"]
                     elif item["type"] == "step":
                         st.session_state.current_step = item["message"]
                         st.session_state.progress_messages.append(f"⚡ {item['message']}")
                     elif item["type"] == "result":
-            st.session_state.is_researching = False
-            st.session_state.research_complete = True
+                        st.session_state.is_researching = False
+                        st.session_state.research_complete = True
                         st.session_state.current_task = item["data"]
                         st.session_state.research_results.append(item["data"])
-                st.session_state.just_completed = True
-                
+                        st.session_state.just_completed = True
+                        
                         # 保存到LocalStorage
                         localS = LocalStorage()
                         serializable_results = json_serializable(st.session_state.research_results)
@@ -426,29 +426,36 @@ def research_interface():
                             future.result() 
                             # 如果没有异常，但走到了这里，说明逻辑有问题
                             st.session_state.research_error = "研究意外终止，但未报告明确错误。"
-        except Exception as e:
+                        except Exception as e:
                             # 捕获到后台任务的异常
                             st.session_state.research_error = f"研究任务在后台发生错误: {e}"
                         
-            st.session_state.is_researching = False
+                        st.session_state.is_researching = False
                         st.rerun()
-            else:
+                    else:
                         # 任务仍在运行，队列为空是正常的，继续轮询
                         time.sleep(0.1)
                         st.rerun()
 
+    # 显示最近一次完成的研究结果
+    if st.session_state.research_complete and not st.session_state.is_researching:
+        if st.session_state.current_task:
+            result = st.session_state.current_task
+            if result.get("success"):
+                st.success("🎉 研究完成！")
+                display_final_answer(result)
+                display_search_results(result)
+                display_task_analysis(result.get("workflow_analysis"), result.get("task_id"))
+            else:
+                st.error(f"研究失败: {result.get('error', '未知错误')}")
+        
     # 显示历史研究结果
     if st.session_state.research_results:
-        # 如果是刚刚完成，显示一个成功的提示
-        if st.session_state.just_completed:
-            st.success("🎉 研究完成！")
-            st.session_state.just_completed = False # 重置标记，避免重复显示
-
         st.markdown("---")
         st.subheader("📜 研究历史记录")
         for i, result in enumerate(reversed(st.session_state.research_results)):
             task_id = result.get("task_id", f"history_{i}")
-            with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({task_id[:8]})", expanded=(i==0)):
+            with st.expander(f"**{result.get('user_query', '未知查询')}** - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({task_id[:20]})", expanded=(i==0)):
                 if result.get("success"):
                     display_final_answer(result)
                     display_search_results(result)
@@ -478,8 +485,8 @@ def export_results():
         
         task_id = latest_result.get("task_id", "research_results")
         file_name = f"{task_id}.json"
-                
-                st.sidebar.download_button(
+
+        st.sidebar.download_button(
             label="📥 下载JSON格式结果",
             data=json_data,
             file_name=file_name,
@@ -489,15 +496,15 @@ def export_results():
 
         markdown_content = create_markdown_content(latest_result)
         md_file_name = f"{task_id}.md"
-                
-                st.sidebar.download_button(
+
+        st.sidebar.download_button(
             label="📝 下载Markdown格式报告",
-                    data=markdown_content,
+            data=markdown_content,
             file_name=md_file_name,
             mime="text/markdown",
             help="将最近一次的研究结果导出为Markdown文件"
-                )
-            except Exception as e:
+        )
+    except Exception as e:
         st.sidebar.error(f"导出失败: {e}")
 
 
