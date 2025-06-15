@@ -477,32 +477,11 @@ def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
         )
         
         if need_recreate:
-            # 更新API配置
-            update_api_config()
-            
-            # 根据API模式创建引擎
-            if st.session_state.api_mode == APIMode.OPENAI:
-                # 使用OpenAI模式时，需要设置API密钥
-                if not st.session_state.openai_config.get("api_key"):
-                    st.session_state.openai_config["api_key"] = api_key
-            
-            # 使用任务模型配置创建引擎
+            # 创建引擎（暂时使用简化版本）
             engine = ResearchEngine(
                 api_key=api_key,
-                model_name=st.session_state.task_models.get("search", model_name),
-                preferred_mode=st.session_state.api_mode
+                model_name=model_name
             )
-            
-            # 更新引擎的模型配置
-            if hasattr(engine, 'client_manager') and hasattr(engine.client_manager, 'update_config'):
-                try:
-                    engine.client_manager.update_config(
-                        search_model=st.session_state.task_models.get("search", model_name),
-                        analysis_model=st.session_state.task_models.get("task_analysis", model_name),
-                        answer_model=st.session_state.task_models.get("answer", model_name)
-                    )
-                except Exception as e:
-                    st.warning(f"更新模型配置时出现警告: {e}")
             
             st.session_state.research_engine = engine
             st.session_state.model_name = model_name

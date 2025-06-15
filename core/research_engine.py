@@ -4,29 +4,28 @@
 """
 
 import asyncio
+import json
 import time
 import traceback
 from typing import Dict, List, Any, Optional, Callable
+from dataclasses import dataclass
 from datetime import datetime
 
-from .workflow_builder import DynamicWorkflowBuilder, DynamicWorkflow, WorkflowStep
+# 导入核心模块
 from .search_agent import SearchAgent
-from .state_manager import StateManager, TaskStatus
-from .model_config import ModelConfiguration, get_model_config, set_user_model
-from .api_factory import APIClientFactory, ClientManager
-from .api_config import APIConfig, APIMode
-from utils.prompts import PromptTemplates
-from utils.helpers import extract_json_from_text
-from utils.debug_logger import get_debug_logger
+from .workflow_builder import DynamicWorkflowBuilder, DynamicWorkflow, WorkflowStep
+from .state_manager import StateManager
+from .debug_logger import get_debug_logger
+from ..utils.models import get_model_config, set_user_model
 
 
 class ResearchEngine:
     """深度研究引擎核心 - 支持双模式API"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", preferred_mode: Optional[APIMode] = None):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+        """初始化研究引擎"""
         self.api_key = api_key
-        self.user_model = model_name
-        self.preferred_mode = preferred_mode
+        self.model_name = model_name
         
         # 设置用户选择的模型，但搜索功能将固定使用gemini-2.0-flash
         set_user_model(model_name)
@@ -34,32 +33,14 @@ class ResearchEngine:
         
         print(f"🤖 研究引擎初始化:")
         print(f"  用户选择模型: {model_name}")
-        print(f"  搜索模型: {self.model_config.search_model} (固定)")
+        print(f"  搜索模型: {self.model_config.search_model}")
         print(f"  任务分析模型: {self.model_config.task_analysis_model}")
         print(f"  反思模型: {self.model_config.reflection_model}")
         print(f"  答案生成模型: {self.model_config.answer_model}")
-        if preferred_mode:
-            print(f"  优先模式: {preferred_mode.value}")
         
-        # 初始化客户端管理器
-        self.client_manager = ClientManager(api_key)
-        self.client_manager.update_config(
-            search_model=self.model_config.search_model,
-            analysis_model=self.model_config.task_analysis_model,
-            answer_model=self.model_config.answer_model
-        )
-        
-        # 初始化核心组件，使用对应的模型
-        self.workflow_builder = DynamicWorkflowBuilder(
-            api_key, 
-            self.model_config.task_analysis_model,
-            preferred_mode=preferred_mode
-        )
-        self.search_agent = SearchAgent(
-            api_key, 
-            self.model_config.search_model,
-            preferred_mode=preferred_mode
-        )
+        # 初始化核心组件，使用原始方法
+        self.workflow_builder = DynamicWorkflowBuilder(api_key, self.model_config.task_analysis_model)
+        self.search_agent = SearchAgent(api_key, self.model_config.search_model)
         self.state_manager = StateManager()
         self.debug_logger = get_debug_logger()
         
@@ -698,24 +679,25 @@ class ResearchEngine:
                     context=f"第{current_round}轮反思分析"
                 )
                 
-                response_text = await self._generate_content_unified(
-                    self.search_agent.client,
-                    reflection_prompt,
-                    reflection_model,
-                    temperature=0.3,
-                    max_tokens=max_tokens
+                response = self.search_agent.client.models.generate_content(
+                    model=reflection_model,
+                    contents=reflection_prompt,
+                    config={
+                        "temperature": 0.3,
+                        "max_output_tokens": max_tokens
+                    }
                 )
                 
                 # Debug: 记录反思分析API响应
                 self.debug_logger.log_api_response(
                     request_id=reflection_request_id,
-                    response_text=response_text
+                    response_text=response.text
                 )
                 
                 # 解析AI反思结果
                 import json
                 try:
-                    reflection_result = json.loads(response_text.strip().replace('```json', '').replace('```', ''))
+                    reflection_result = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
                 except:
                     # 降级处理
                     reflection_result = {
@@ -877,14 +859,12 @@ class ResearchEngine:
 """
                 
                 if self.search_agent.client:
-                    response_text = await self._generate_content_unified(
-                        self.search_agent.client,
-                        context_prompt,
-                        self.model_config.get_model_for_task("search"),
-                        temperature=0.7,
-                        max_tokens=500
+                    response = self.search_agent.client.models.generate_content(
+                        model=self.model_config.get_model_for_task("search"),
+                        contents=context_prompt,
+                        config={"temperature": 0.7, "max_output_tokens": 500}
                     )
-                    generated_queries = [q.strip() for q in response_text.strip().split('\n') if q.strip()]
+                    generated_queries = [q.strip() for q in response.text.strip().split('\n') if q.strip()]
                     follow_up_queries = generated_queries[:queries_per_round]
                     
             except Exception as e:
@@ -1048,29 +1028,19 @@ class ResearchEngine:
                     context="生成最终答案"
                 )
                 
-                # 根据客户端类型调用不同的方法
-                if hasattr(self.search_agent.client, 'models'):
-                    # Google GenAI客户端
-                    response = self.search_agent.client.models.generate_content(
-                        model=answer_model,
-                        contents=synthesis_prompt,
-                        config={
-                            "temperature": 0.3,
-                            "max_output_tokens": max_tokens
-                        }
-                    )
-                    final_answer = response.text
-                else:
-                    # OpenAI兼容客户端
-                    response = await self.search_agent.client.generate_content(
-                        prompt=synthesis_prompt,
-                        temperature=0.3,
-                        max_tokens=max_tokens
-                    )
-                    final_answer = response.text if response.success else f"生成答案失败: {response.error}"
+                response = self.search_agent.client.models.generate_content(
+                    model=answer_model,
+                    contents=synthesis_prompt,
+                    config={
+                        "temperature": 0.3,
+                        "max_output_tokens": max_tokens
+                    }
+                )
                 
                 self._notify_step("AI模型响应完成，正在处理结果...")
                 self._notify_progress("答案生成完成", 95)
+                
+                final_answer = response.text
                 
                 # Debug: 记录最终答案生成API响应
                 self.debug_logger.log_api_response(
@@ -1143,13 +1113,15 @@ Note: This information is gathered from web searches. Please verify for accuracy
                     answer_model = self.model_config.get_model_for_task("answer")
                     max_tokens = self.model_config.get_token_limits("answer")
                     
-                    answer = await self._generate_content_unified(
-                        self.search_agent.client,
-                        synthesis_prompt,
-                        answer_model,
-                        temperature=0.3,
-                        max_tokens=max_tokens
+                    response = self.search_agent.client.models.generate_content(
+                        model=answer_model,
+                        contents=synthesis_prompt,
+                        config={
+                            "temperature": 0.3,
+                            "max_output_tokens": max_tokens
+                        }
                     )
+                    answer = response.text
                 else:
                     # 降级处理
                     answer = f"""# Answer to: {user_query}
@@ -1197,83 +1169,21 @@ Note: This information is gathered from web searches. Please verify for accuracy
     async def close_clients(self):
         """关闭所有客户端连接"""
         try:
-            await self.client_manager.close_all()
             if hasattr(self.search_agent.client, 'close'):
                 await self.search_agent.client.close()
         except Exception as e:
             print(f"关闭客户端时出错: {e}")
     
-    def get_client_info(self) -> Dict[str, Any]:
-        """获取客户端信息"""
-        return {
-            "search_client": {
-                "model": self.search_agent.model_name,
-                "type": self.search_agent.client.__class__.__name__,
-                "supports_search": self.search_agent.client.supports_search(),
-                "supports_tools": self.search_agent.client.supports_tools()
-            },
-            "workflow_client": {
-                "model": self.workflow_builder.model_name,
-                "type": self.workflow_builder.client.__class__.__name__,
-                "supports_search": self.workflow_builder.client.supports_search(),
-                "supports_tools": self.workflow_builder.client.supports_tools()
-            },
-            "dual_mode_enabled": APIConfig.is_dual_mode_enabled(),
-            "available_models": APIConfig.get_available_models()
-        }
-    
-    def switch_mode(self, preferred_mode: APIMode):
-        """切换API模式（需要重新初始化客户端）"""
-        self.preferred_mode = preferred_mode
-        
-        # 重新创建客户端
-        self.search_agent = SearchAgent(
-            self.api_key,
-            self.model_config.search_model,
-            preferred_mode=preferred_mode
-        )
-        
-        self.workflow_builder = DynamicWorkflowBuilder(
-            self.api_key,
-            self.model_config.task_analysis_model,
-            preferred_mode=preferred_mode
-        )
-        
-        print(f"✅ 已切换到 {preferred_mode.value} 模式")
-        
     @classmethod
     def create_with_config(cls, api_key: str, **config) -> "ResearchEngine":
         """使用配置创建研究引擎实例"""
         model_name = config.get("model_name", "gemini-2.0-flash")
-        preferred_mode = config.get("preferred_mode")
+        engine = cls(api_key, model_name)
         
-        # 如果传入字符串模式，转换为枚举
-        if isinstance(preferred_mode, str):
-            preferred_mode = APIMode(preferred_mode)
+        # 设置其他配置
+        if "max_search_rounds" in config:
+            engine._max_search_rounds = config["max_search_rounds"]
+        if "effort_level" in config:
+            engine._effort_level = config["effort_level"]
         
-        return cls(api_key, model_name, preferred_mode)
-
-    async def _generate_content_unified(self, client, prompt: str, model: str = None, temperature: float = 0.3, max_tokens: int = 4096) -> str:
-        """统一的内容生成方法，兼容不同客户端类型"""
-        try:
-            if hasattr(client, 'models'):
-                # Google GenAI客户端
-                response = client.models.generate_content(
-                    model=model or self.model_config.get_model_for_task("search"),
-                    contents=prompt,
-                    config={
-                        "temperature": temperature,
-                        "max_output_tokens": max_tokens
-                    }
-                )
-                return response.text
-            else:
-                # OpenAI兼容客户端
-                response = await client.generate_content(
-                    prompt=prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
-                return response.text if response.success else f"生成失败: {response.error}"
-        except Exception as e:
-            return f"调用失败: {str(e)}" 
+        return engine 
