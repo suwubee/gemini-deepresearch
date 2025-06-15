@@ -608,30 +608,30 @@ def research_interface():
             ["low", "medium", "high"],
             index=1,
             format_func=lambda x: {"low": "🟢 低强度", "medium": "🟡 中强度", "high": "🔴 高强度"}[x],
-            help="低强度: 1轮×3查询, 中强度: 3轮×5查询, 高强度: 5轮×10查询",
+            help="低强度: 3个初始查询×1轮, 中强度: 5个初始查询×3轮, 高强度: 7个初始查询×5轮",
             disabled=st.session_state.is_researching
         )
     
     with col2:
-        # 根据强度显示配置信息
+        # 根据强度显示配置信息 - 与ResearchEngine保持一致
         effort_configs = {
-            "low": {"rounds": "1轮(最多3轮)", "queries": 3, "time": "1-5分钟"},
-            "medium": {"rounds": 3, "queries": 5, "time": "4-10分钟"},
-            "high": {"rounds": 5, "queries": 10, "time": "8-20分钟"}
+            "low": {"rounds": 1, "initial_queries": 3, "time": "1-3分钟", "desc": "快速概览"},
+            "medium": {"rounds": 3, "initial_queries": 5, "time": "4-8分钟", "desc": "深度研究"},
+            "high": {"rounds": 5, "initial_queries": 7, "time": "8-15分钟", "desc": "全面分析"}
         }
         config = effort_configs[effort_level]
         
         st.info(f"""
-        📊 **当前配置**
-        - 🔄 搜索轮数: {config['rounds']}轮
-        - 🔍 每轮查询: {config['queries']}个
+        📊 **{config['desc']}配置**
+        - 🔍 初始查询: {config['initial_queries']}个
+        - 🔄 最大轮数: {config['rounds']}轮
         - ⏱️ 预计时间: {config['time']}
         """)
         
         # 设置默认值，但允许用户在高级设置中覆盖
-        default_max_rounds = {"low": 3, "medium": 3, "high": 5}[effort_level]
+        default_max_rounds = config['rounds']
         max_search_rounds = default_max_rounds
-        num_search_queries = config['queries']
+        num_search_queries = config['initial_queries']
         
         with st.expander("⚙️ 高级设置", expanded=False):
             max_search_rounds = st.slider(
@@ -641,12 +641,12 @@ def research_interface():
             )
             
             num_search_queries = st.slider(
-                "自定义每轮查询数量", 1, 15, config['queries'],
-                help="覆盖默认的每轮查询数量",
+                "自定义初始查询数量", 1, 15, config['initial_queries'],
+                help="覆盖默认的初始查询数量",
                 disabled=st.session_state.is_researching
             )
             
-            st.info(f"💡 **说明**: 低强度默认1轮搜索，信息不足时自动补充，最多3轮")
+            st.info(f"💡 **说明**: 低强度进行1轮搜索，中高强度会根据信息充足性进行多轮补充搜索")
     
     # 开始/停止研究按钮
     if not st.session_state.is_researching:
