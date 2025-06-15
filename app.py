@@ -543,47 +543,43 @@ def display_real_time_progress():
 def run_research_in_background(
     engine, user_query, max_search_rounds, effort_level, num_search_queries, q, stop_event
 ):
-    """在后台线程中运行研究任务"""
+    """在后台线程中运行研究"""
+    
+    # 获取或创建一个新的事件循环
     try:
-        # 为这个线程创建一个新的事件循环
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        def progress_callback(message, percentage):
-            if stop_event.is_set():
-                engine.stop_research()
-                raise Exception("用户请求停止")
-            q.put({"type": "progress", "message": message, "percentage": percentage})
+    # 定义回调函数
+    def progress_callback(message, percentage):
+        q.put({"type": "progress", "message": message, "percentage": percentage})
 
-        def step_callback(message):
-            if stop_event.is_set():
-                engine.stop_research()
-                raise Exception("用户请求停止")
-            q.put({"type": "step", "message": message})
-            
-        def error_callback(message):
-            q.put({"type": "error", "message": message})
+    def step_callback(message):
+        q.put({"type": "step", "message": message})
 
-        engine.set_callbacks(
-            progress_callback=progress_callback,
-            step_callback=step_callback,
-            error_callback=error_callback,
-        )
-        
-        # 重置引擎的停止标记
-        engine.reset_stop_flag()
+    def error_callback(message):
+        q.put({"type": "error", "message": message})
 
-        # 运行异步研究方法
-        results = loop.run_until_complete(
+    # 设置回调
+    engine.set_callbacks(
+        progress_callback=progress_callback,
+        step_callback=step_callback,
+        error_callback=error_callback
+    )
+
+    try:
+        # 运行研究
+        result = loop.run_until_complete(
             engine.research(user_query, max_search_rounds, effort_level, num_search_queries)
         )
-        q.put({"type": "result", "data": results})
-        
+        q.put({"type": "result", "data": result})
     except Exception as e:
-        if "用户请求停止" not in str(e):
-            error_msg = f"研究过程中发生严重错误: {str(e)}"
-            q.put({"type": "error", "message": error_msg})
-        # 如果是用户停止，回调中已经处理了，这里不需要重复发送消息
+        q.put({"type": "error", "message": f"研究过程中发生严重错误: {e}"})
+    finally:
+        # 确保即使发生错误也发出完成信号
+        q.put({"type": "done"})
 
 
 def research_interface():
