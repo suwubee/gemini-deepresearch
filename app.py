@@ -331,18 +331,20 @@ def initialize_from_localstorage():
         st.session_state['localstorage_initialized'] = True
 
 
-def validate_and_setup_engine(api_key: str, model_name: str) -> bool:
+def validate_and_setup_engine(api_key: str, model_name: str, api_provider: str = "gemini") -> bool:
     """验证API密钥并设置引擎"""
     if not api_key or len(api_key) < 10:
         return False
     
     try:
         if (st.session_state.research_engine is None or 
-            st.session_state.model_name != model_name):
+            st.session_state.model_name != model_name or
+            getattr(st.session_state, 'api_provider', 'gemini') != api_provider):
             
-            engine = ResearchEngine(api_key, model_name)
+            engine = ResearchEngine(api_key, model_name, api_provider)
             st.session_state.research_engine = engine
             st.session_state.model_name = model_name
+            st.session_state.api_provider = api_provider
             
         return True
     except Exception as e:
@@ -888,48 +890,131 @@ def research_interface():
     # Debug相关显示
     if st.session_state.get("debug_enabled", False):
         with st.expander("🐛 Debug信息", expanded=False):
-            if st.button("📋 显示详细日志"):
-                st.session_state.show_debug_details = True
-                st.rerun()
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("📋 显示详细日志"):
+                    st.session_state.show_debug_details = True
+                    st.rerun()
+            with col2:
+                if st.button("📊 会话统计"):
+                    st.session_state.show_debug_summary = True
+                    st.rerun()
+            with col3:
+                if st.button("🧹 清空日志"):
+                    from utils.debug_logger import get_debug_logger
+                    debug_logger = get_debug_logger()
+                    debug_logger.clear_session()
+                    st.success("Debug日志已清空")
+                    st.rerun()
+
+    # 显示简化的会话统计
+    if st.session_state.get("show_debug_summary", False):
+        st.markdown("---")
+        st.subheader("📊 Debug会话统计")
+        
+        from utils.debug_logger import get_debug_logger
+        debug_logger = get_debug_logger()
+        
+        if debug_logger.enabled and debug_logger.session_data:
+            summary = debug_logger.get_session_summary()
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("API请求", summary.get("api_requests", {}).get("total", 0))
+                st.metric("成功请求", summary.get("api_requests", {}).get("successful", 0))
+            with col2:
+                st.metric("搜索次数", summary.get("searches", {}).get("total", 0))
+                st.metric("工作流步骤", summary.get("workflow", {}).get("total_steps", 0))
+            with col3:
+                st.metric("错误数量", summary.get("errors", {}).get("total", 0))
+                st.metric("研究结果", summary.get("research_results", 0))
+            
+            # 显示详细统计
+            st.json(summary)
+        else:
+            st.info("Debug模式未启用或暂无数据")
+        
+        if st.button("❌ 关闭统计"):
+            st.session_state.show_debug_summary = False
+            st.rerun()
     
-    # 显示详细Debug日志
+    # 显示详细Debug日志（优化版本）
     if st.session_state.get("show_debug_details", False):
         st.markdown("---")
         st.subheader("🐛 详细Debug日志")
+        
+        # 添加性能警告
+        st.warning("⚠️ 详细日志可能包含大量数据，加载时间较长。建议先查看会话统计。")
         
         from utils.debug_logger import get_debug_logger
         debug_logger = get_debug_logger()
         
         if debug_logger.enabled and debug_logger.session_data:
             # 创建标签页
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 API请求", "🔍 搜索结果", "⚙️ 工作流步骤", "❌ 错误日志", "📊 会话信息"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📤 API请求", "🔍 搜索结果", "⚙️ 工作流步骤", "❌ 错误日志"])
             
             with tab1:
                 st.markdown("### API请求详情")
                 api_requests = debug_logger.session_data.get("api_requests", [])
                 if api_requests:
-                    for i, req in enumerate(api_requests):
-                        with st.expander(f"请求 {i+1}: {req.get('request_type', 'unknown')} - {req.get('context', '')}", expanded=False):
+                    # 限制显示数量以提高性能
+                    max_items = st.selectbox("显示最近几条请求", [5, 10, 20, -1], index=0, 
+                                           format_func=lambda x: f"最近{x}条" if x > 0 else "全部")
+                    
+                    display_requests = api_requests[-max_items:] if max_items > 0 else api_requests
+                    
+                    for i, req in enumerate(display_requests):
+                        request_id = req.get('request_id', f'req_{i}')
+                        request_type = req.get('request_type', 'unknown')
+                        context = req.get('context', '')
+                        model = req.get('model', 'N/A')
+                        status = req.get('status', 'N/A')
+                        
+                        # 计算持续时间
+                        duration = "N/A"
+                        if req.get('response'):
+                            duration = f"{req['response'].get('duration', 0):.2f}s"
+                        
+                        with st.expander(f"请求 {i+1}: {request_type} - {context} [{status}] ({duration})", expanded=False):
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.text(f"时间: {req.get('timestamp', 'N/A')}")
-                                st.text(f"请求ID: {req.get('request_id', 'N/A')}")
-                                st.text(f"模型: {req.get('model', 'N/A')}")
-                                st.text(f"类型: {req.get('request_type', 'N/A')}")
-                                st.text(f"上下文: {req.get('context', 'N/A')}")
+                                st.text(f"请求ID: {request_id}")
+                                st.text(f"模型: {model}")
+                                st.text(f"类型: {request_type}")
+                                st.text(f"上下文: {context}")
+                                st.text(f"状态: {status}")
                             with col2:
-                                st.text(f"Prompt长度: {req.get('full_prompt_length', 0)}")
+                                prompt_len = req.get('full_prompt_length', 0)
+                                st.text(f"Prompt长度: {prompt_len}")
+                                
                                 response = req.get('response', {})
                                 if response:
-                                    st.text(f"响应长度: {response.get('full_response_length', 0)}")
-                                    st.text(f"耗时: {response.get('duration', 0):.2f}s")
-                                    st.text(f"状态: {response.get('status', 'N/A')}")
+                                    resp_len = response.get('full_response_length', 0)
+                                    st.text(f"响应长度: {resp_len}")
+                                    st.text(f"耗时: {duration}")
+                                    st.text(f"响应状态: {response.get('status', 'N/A')}")
                             
-                            # 显示完整prompt和响应
-                            if st.checkbox(f"显示完整内容 - 请求{i+1}", key=f"show_full_req_{i}"):
-                                st.text_area("完整Prompt:", req.get('full_prompt', ''), height=200, key=f"prompt_{i}")
+                            # 显示预览而不是完整内容
+                            st.text("Prompt预览:")
+                            st.text_area("", req.get('prompt_preview', '无预览'), height=100, key=f"prompt_preview_{i}", disabled=True)
+                            
+                            if response and response.get('text_preview'):
+                                st.text("响应预览:")
+                                st.text_area("", response.get('text_preview', '无预览'), height=100, key=f"response_preview_{i}", disabled=True)
+                            
+                            # 只在用户明确要求时显示完整内容
+                            if st.checkbox(f"显示完整内容 - 请求{i+1} ⚠️", key=f"show_full_req_{i}", help="注意：完整内容可能很大"):
+                                full_prompt = req.get('full_prompt', '')
+                                if len(full_prompt) > 10000:
+                                    st.warning(f"内容很大 ({len(full_prompt)} 字符)，可能影响性能")
+                                st.text_area("完整Prompt:", full_prompt, height=200, key=f"full_prompt_{i}")
+                                
                                 if response and response.get('full_response'):
-                                    st.text_area("完整响应:", response.get('full_response', ''), height=200, key=f"response_{i}")
+                                    full_response = response.get('full_response', '')
+                                    if len(full_response) > 10000:
+                                        st.warning(f"响应很大 ({len(full_response)} 字符)，可能影响性能")
+                                    st.text_area("完整响应:", full_response, height=200, key=f"full_response_{i}")
                 else:
                     st.info("暂无API请求记录")
             
@@ -938,23 +1023,35 @@ def research_interface():
                 search_results = debug_logger.session_data.get("search_results", [])
                 if search_results:
                     for i, search in enumerate(search_results):
-                        with st.expander(f"搜索 {i+1}: {search.get('query', 'unknown')[:50]}...", expanded=False):
+                        query = search.get('query', 'unknown')
+                        success = search.get('success', False)
+                        duration = search.get('duration', 0)
+                        
+                        with st.expander(f"搜索 {i+1}: {query[:50]}... [{'✅' if success else '❌'}] ({duration:.2f}s)", expanded=False):
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.text(f"时间: {search.get('timestamp', 'N/A')}")
-                                st.text(f"查询: {search.get('query', 'N/A')}")
+                                st.text(f"查询: {query}")
                                 st.text(f"类型: {search.get('search_type', 'N/A')}")
-                                st.text(f"成功: {search.get('success', False)}")
+                                st.text(f"成功: {success}")
                             with col2:
                                 st.text(f"内容长度: {search.get('content_length', 0)}")
                                 st.text(f"引用数: {search.get('citations_count', 0)}")
                                 st.text(f"URL数: {search.get('urls_count', 0)}")
-                                st.text(f"耗时: {search.get('duration', 0):.2f}s")
+                                st.text(f"耗时: {duration:.2f}s")
                             
-                            # 显示完整搜索结果
-                            if st.checkbox(f"显示完整结果 - 搜索{i+1}", key=f"show_full_search_{i}"):
+                            # 只显示摘要而不是完整结果
+                            if st.checkbox(f"显示搜索结果摘要 - 搜索{i+1}", key=f"show_search_summary_{i}"):
                                 full_result = search.get('full_result', {})
-                                st.json(full_result)
+                                # 创建安全的摘要
+                                summary = {
+                                    "success": full_result.get('success'),
+                                    "has_grounding": full_result.get('has_grounding'),
+                                    "content_preview": full_result.get('content', '')[:500] + "..." if len(full_result.get('content', '')) > 500 else full_result.get('content', ''),
+                                    "citations_count": len(full_result.get('citations', [])),
+                                    "grounding_chunks": full_result.get('grounding_chunks', 0)
+                                }
+                                st.json(summary)
                 else:
                     st.info("暂无搜索记录")
             
@@ -982,20 +1079,19 @@ def research_interface():
                                 if step.get('error_message'):
                                     st.text(f"错误: {step.get('error_message', '')}")
                             
-                            # 显示输入输出数据
-                            if st.checkbox(f"显示详细数据 - 步骤{i+1}", key=f"show_step_data_{i}"):
-                                if step.get('full_input'):
-                                    st.text("输入数据:")
-                                    st.json(step.get('input_summary', {}))
-                                if step.get('full_output'):
-                                    st.text("输出数据:")
-                                    st.json(step.get('output_summary', {}))
+                            # 只显示摘要信息
+                            if step.get('input_summary'):
+                                st.text("输入摘要:")
+                                st.json(step.get('input_summary', {}))
+                            if step.get('output_summary'):
+                                st.text("输出摘要:")
+                                st.json(step.get('output_summary', {}))
                 else:
                     st.info("暂无工作流步骤记录")
             
             with tab4:
                 st.markdown("### 错误日志详情")
-                error_logs = debug_logger.session_data.get("error_logs", [])
+                error_logs = debug_logger.session_data.get("errors", [])
                 if error_logs:
                     for i, error in enumerate(error_logs):
                         error_type = error.get('error_type', 'unknown')
@@ -1012,32 +1108,13 @@ def research_interface():
                                     st.text("元数据:")
                                     st.json(error.get('metadata', {}))
                             
-                            # 显示完整错误信息
-                            if st.checkbox(f"显示完整错误 - 错误{i+1}", key=f"show_full_error_{i}"):
-                                st.text_area("错误消息:", error_message, height=100, key=f"error_msg_{i}")
-                                if error.get('traceback'):
-                                    st.text_area("堆栈跟踪:", error.get('traceback', ''), height=200, key=f"traceback_{i}")
+                            # 显示错误信息
+                            st.text_area("错误消息:", error_message, height=100, key=f"error_msg_{i}", disabled=True)
+                            if error.get('stacktrace'):
+                                if st.checkbox(f"显示堆栈跟踪 - 错误{i+1}", key=f"show_traceback_{i}"):
+                                    st.text_area("堆栈跟踪:", error.get('stacktrace', ''), height=200, key=f"traceback_{i}", disabled=True)
                 else:
                     st.info("暂无错误记录")
-            
-            with tab5:
-                st.markdown("### 会话信息详情")
-                research_results = debug_logger.session_data.get("research_results", [])
-                if research_results:
-                    for i, result in enumerate(research_results):
-                        with st.expander(f"结果 {i+1}: {result.get('user_query', 'unknown')[:50]}...", expanded=False):
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.text(f"时间: {result.get('timestamp', 'N/A')}")
-                                st.text(f"用户查询: {result.get('user_query', 'N/A')}")
-                                st.text(f"答案长度: {result.get('final_answer_length', 0)}")
-                                st.text(f"成功: {result.get('success', False)}")
-                            with col2:
-                                if result.get('metadata'):
-                                    st.text("元数据:")
-                                    st.json(result.get('metadata', {}))
-                else:
-                    st.info("暂无研究结果记录")
         else:
             st.info("Debug模式未启用或暂无数据")
         
@@ -1165,10 +1242,38 @@ def sidebar_content():
         st.rerun()
 
 
+def check_application_health():
+    """简单的应用程序健康检查"""
+    issues = []
+    
+    try:
+        # 检查核心模块导入
+        from core.research_engine import ResearchEngine
+        from core.state_manager import TaskStatus
+    except ImportError as e:
+        issues.append(f"核心模块导入失败: {e}")
+    
+    return issues
+
+
 def main():
-    """主函数"""
+    """主函数，增加健康检查"""
+    # 应用健康检查
+    health_issues = check_application_health()
+    if health_issues:
+        st.error("🚨 应用程序初始化失败：")
+        for issue in health_issues:
+            st.error(f"• {issue}")
+        st.info("请检查依赖安装：pip install -r requirements.txt")
+        return
+    
     # 最重要：首先初始化会话状态
-    initialize_session_state()
+    try:
+        initialize_session_state()
+    except Exception as e:
+        st.error(f"🚨 会话状态初始化失败: {e}")
+        st.info("请刷新页面重试")
+        return
     
     # 延迟加载历史记录（确保LocalStorage已准备好）
     if "history_loaded" not in st.session_state:
@@ -1219,11 +1324,20 @@ def main():
             st.warning(f"⚠️ 加载历史记录时出错: {e}")
             st.session_state.history_loaded = True
     
-    # 显示侧边栏
-    sidebar_content()
-    
-    # 显示主界面
-    research_interface()
+    try:
+        # 显示侧边栏
+        sidebar_content()
+        
+        # 显示主界面
+        research_interface()
+    except Exception as e:
+        st.error(f"🚨 应用程序运行错误: {e}")
+        st.info("请刷新页面重试，或检查控制台错误信息")
+        
+        # 显示错误详情（仅在debug模式下）
+        if st.session_state.get("debug_enabled", False):
+            import traceback
+            st.text_area("错误详情:", traceback.format_exc(), height=200)
 
 
 if __name__ == "__main__":

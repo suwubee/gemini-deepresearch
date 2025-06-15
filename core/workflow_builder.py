@@ -10,7 +10,7 @@ from datetime import datetime
 import time
 
 from .state_manager import TaskStatus, WorkflowAnalysis
-from .api_client import GeminiApiClient
+from .api_client import create_api_client, BaseApiClient
 from utils.prompts import PromptTemplates
 from utils.helpers import extract_json_from_text, safe_json_loads
 from utils.debug_logger import get_debug_logger
@@ -77,10 +77,11 @@ class DynamicWorkflow:
 class DynamicWorkflowBuilder:
     """动态工作流构建器，参考原始planner"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", api_provider: str = "gemini"):
         self.api_key = api_key
         self.model_name = model_name
-        self.client = GeminiApiClient(api_key=api_key)
+        self.api_provider = api_provider
+        self.client = create_api_client(api_provider, api_key)
         self.debug_logger = get_debug_logger()
 
     async def build_workflow(self, user_query: str) -> DynamicWorkflow:

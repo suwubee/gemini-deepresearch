@@ -8,25 +8,27 @@ import traceback
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 import asyncio
+import re
 
-from .api_client import GeminiApiClient
-
+from .api_client import create_api_client, BaseApiClient
+from utils.debug_logger import get_debug_logger
+from utils.prompts import PromptTemplates
 from utils.helpers import (
     extract_json_from_text, 
     format_citations, 
     extract_urls,
     clean_text
 )
-from utils.debug_logger import get_debug_logger
 
 
 class SearchAgent:
     """智能搜索代理"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", api_provider: str = "gemini"):
         self.api_key = api_key
         self.model_name = model_name
-        self.client = GeminiApiClient(api_key=api_key)
+        self.api_provider = api_provider
+        self.client = create_api_client(api_provider, api_key)
         self.search_history = []
         self.debug_logger = get_debug_logger()
     
@@ -279,8 +281,10 @@ class SearchAgent:
             )
 
             if "error" in response:
-                self.debug_logger.log_api_response(request_id, "", None, str(response['error']))
-                raise Exception(f"API Error: {response['error'].get('message', 'Unknown error')}")
+                error_msg = response.get('error', {}).get('message', 'API error')
+                self.debug_logger.log_api_response(request_id, "", None, error_msg)
+                self.debug_logger.log_error("QueryGenerationError", error_msg, {"user_query": user_query})
+                return [user_query]
 
             response_text = self._get_text_from_response(response)
             self.debug_logger.log_api_response(request_id, response_text, {"response_length": len(response_text)})
@@ -289,34 +293,46 @@ class SearchAgent:
                 result = extract_json_from_text(response_text)
                 
                 if result and "query" in result and isinstance(result["query"], list):
-                    queries = result["query"][:num_queries]
-                    self.debug_logger.log_execution_flow(
-                        "query_generation_success", 
-                        f"Generated {len(queries)} queries",
-                        {"queries": queries, "user_query": user_query}
-                    )
-                    return queries
-                else:
-                    self.debug_logger.log_execution_flow(
-                        "query_generation_fallback", 
-                        "JSON parsing failed, using original query",
-                        {"parsed_result": result, "response_text": response_text[:200]}
-                    )
-            else:
-                self.debug_logger.log_execution_flow(
-                    "query_generation_empty", 
-                    "Empty response, using original query",
-                    {"user_query": user_query}
-                )
+                    queries = [q.strip() for q in result["query"] if q and q.strip()]
+                    if queries:
+                        return queries[:num_queries]
             
+            # 如果解析失败或无有效结果，返回原始查询
             return [user_query]
             
         except Exception as e:
-            self.debug_logger.log_error(
-                "QueryGenerationError", str(e), 
-                {"user_query": user_query, "num_queries": num_queries}
-            )
+            self.debug_logger.log_error("QueryGenerationError", str(e), {"user_query": user_query})
             return [user_query]
+    
+    def _generate_fallback_queries(self, user_query: str, num_queries: int) -> List[str]:
+        """生成简单的fallback查询"""
+        # 保持简单，只做基础的查询变换
+        if num_queries == 1:
+            return [user_query]
+        
+        queries = [user_query]
+        if num_queries > 1:
+            queries.append(f"{user_query} 2024")
+        if num_queries > 2:
+            queries.append(f"{user_query} analysis")
+            
+        return queries[:num_queries]
+    
+    def _extract_queries_from_text(self, text: str, num_queries: int) -> List[str]:
+        """从文本中提取查询（简化版本）"""
+        # 查找引号中的内容
+        quotes_pattern = r'["\']([^"\']{5,100})["\']'
+        matches = re.findall(quotes_pattern, text)
+        
+        valid_queries = []
+        for match in matches:
+            cleaned = match.strip()
+            if len(cleaned) > 5 and cleaned not in valid_queries:
+                valid_queries.append(cleaned)
+            if len(valid_queries) >= num_queries:
+                break
+        
+        return valid_queries
     
     async def batch_search(self, queries: List[str]) -> List[Dict[str, Any]]:
         """批量搜索"""

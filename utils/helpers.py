@@ -59,6 +59,9 @@ def format_citations(text: str, citations: List[Dict]) -> str:
 
 def extract_json_from_text(text: str) -> Optional[Dict]:
     """从文本中提取JSON对象"""
+    if not text or not text.strip():
+        return None
+    
     try:
         # 尝试直接解析
         return json.loads(text)
@@ -66,11 +69,11 @@ def extract_json_from_text(text: str) -> Optional[Dict]:
         pass
     
     # 查找JSON代码块
-    json_pattern = r'```json\s*(.*?)\s*```'
-    match = re.search(json_pattern, text, re.DOTALL)
+    json_pattern = r'```(?:json)?\s*(.*?)\s*```'
+    match = re.search(json_pattern, text, re.DOTALL | re.IGNORECASE)
     if match:
         try:
-            return json.loads(match.group(1))
+            return json.loads(match.group(1).strip())
         except json.JSONDecodeError:
             pass
     

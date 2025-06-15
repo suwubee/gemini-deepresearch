@@ -21,13 +21,14 @@ from utils.debug_logger import get_debug_logger
 class ResearchEngine:
     """深度研究引擎核心"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", api_provider: str = "gemini"):
         set_user_model(model_name)
         self.model_config = get_model_config()
+        self.api_provider = api_provider
         
-        # 初始化核心组件
-        self.workflow_builder = DynamicWorkflowBuilder(api_key, self.model_config.task_analysis_model)
-        self.search_agent = SearchAgent(api_key, self.model_config.search_model)
+        # 初始化核心组件 
+        self.workflow_builder = DynamicWorkflowBuilder(api_key, self.model_config.task_analysis_model, api_provider)
+        self.search_agent = SearchAgent(api_key, self.model_config.search_model, api_provider)
         self.state_manager = StateManager()
         self.debug_logger = get_debug_logger()
         
@@ -197,8 +198,10 @@ class ResearchEngine:
         return {**context, "search_results": results, "current_round": 1}
 
     async def _step_analyze_results(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """分析搜索结果"""
         prompt = PromptTemplates.reflection_prompt(context["user_query"], self.state_manager.get_search_content_list())
         model = self.model_config.get_model_for_task("reflection")
+        
         try:
             response = await self.search_agent.client.generate_content(
                 model_name=model,
@@ -206,8 +209,16 @@ class ResearchEngine:
                 temperature=0.1,
                 max_output_tokens=2048
             )
-            reflection = extract_json_from_text(response["candidates"][0]["content"]["parts"][0]["text"])
-            if not reflection: raise ValueError("Parsing reflection failed")
+            
+            if "error" in response:
+                self._notify_step(f"分析失败: {response['error'].get('message', 'Unknown error')}")
+                reflection = {"is_sufficient": True, "knowledge_gap": "Analysis failed", "follow_up_queries": []}
+            else:
+                response_text = response["candidates"][0]["content"]["parts"][0]["text"]
+                reflection = extract_json_from_text(response_text)
+                if not reflection:
+                    reflection = {"is_sufficient": True, "knowledge_gap": "Analysis failed", "follow_up_queries": []}
+                    
         except Exception as e:
             self._notify_step(f"分析失败: {e}")
             reflection = {"is_sufficient": True, "knowledge_gap": "Analysis failed", "follow_up_queries": []}
