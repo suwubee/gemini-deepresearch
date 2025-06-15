@@ -13,11 +13,11 @@ from abc import ABC, abstractmethod
 
 # Google GenAI SDK
 try:
-    import google.generativeai as genai
+    import genai
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
-    print("⚠️ Google GenAI SDK不可用")
+    print("⚠️ 'genai' 库不可用")
 
 
 @dataclass
@@ -69,13 +69,13 @@ class GenAIClient(BaseAPIClient):
         super().__init__(api_key, model_name)
         
         if not GENAI_AVAILABLE:
-            raise ImportError("Google GenAI SDK不可用，请安装：pip install google-generativeai")
+            raise ImportError("'genai' 库不可用，请确认项目依赖")
         
-        # 配置GenAI
+        # 配置GenAI (使用你项目中的方式)
         genai.configure(api_key=api_key)
         self.client = genai.GenerativeModel(model_name)
         
-        print(f"✅ GenAI客户端初始化成功: {model_name}")
+        print(f"✅ GenAI客户端初始化成功 (使用 'genai' 库): {model_name}")
     
     def generate_content(self, prompt: str, **kwargs) -> APIResponse:
         """使用GenAI生成内容"""
@@ -83,27 +83,22 @@ class GenAIClient(BaseAPIClient):
             # 提取参数
             temperature = kwargs.get('temperature', 0.3)
             max_tokens = kwargs.get('max_tokens', kwargs.get('max_output_tokens', 4096))
-            tools = kwargs.get('tools')
             use_search = kwargs.get('use_search', False)
             
-            # 准备生成配置
+            # 准备生成配置 (使用 genai.types)
             generation_config = genai.types.GenerationConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             )
             
-            # 准备工具
-            search_tool = None
-            if use_search and tools == 'google_search_retrieval':
-                search_tool = 'google_search_retrieval'
-            elif use_search and isinstance(tools, list) and any(t.get('type') == 'web_search' for t in tools):
-                search_tool = 'google_search_retrieval'
+            # 准备工具 (使用 google_search_retrieval 字符串)
+            tools = 'google_search_retrieval' if use_search else None
             
             # 调用API
             response = self.client.generate_content(
                 prompt,
                 generation_config=generation_config,
-                tools=search_tool
+                tools=tools
             )
             
             # 解析响应
@@ -112,15 +107,14 @@ class GenAIClient(BaseAPIClient):
         except Exception as e:
             return APIResponse(
                 success=False,
-                error=f"GenAI API调用失败: {str(e)}"
+                error=f"GenAI ('genai'库) API调用失败: {str(e)}"
             )
     
     def _parse_genai_response(self, response, original_query: str) -> APIResponse:
-        """解析GenAI响应"""
+        """解析GenAI响应 (适配 'genai' 库)"""
         try:
             content = response.text if response and hasattr(response, 'text') else ""
             
-            # 检查是否有grounding metadata
             has_grounding = False
             citations = []
             search_queries = []
@@ -129,35 +123,24 @@ class GenAIClient(BaseAPIClient):
             if hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
                 
-                # 检查grounding metadata
                 if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
                     has_grounding = True
                     grounding_metadata = candidate.grounding_metadata
                     
-                    # 提取搜索查询
                     if hasattr(grounding_metadata, 'web_search_queries'):
                         search_queries = list(grounding_metadata.web_search_queries)
                     
-                    # 提取grounding supports（引用信息）
                     if hasattr(grounding_metadata, 'grounding_supports'):
                         citations = self._extract_citations(grounding_metadata.grounding_supports)
-                        # 从citations中提取URLs
                         urls = [cite.get('url', '') for cite in citations if cite.get('url')]
             
             return APIResponse(
-                success=True,
-                text=content,
-                citations=citations,
-                urls=urls,
-                has_grounding=has_grounding,
-                search_queries=search_queries
+                success=True, text=content, citations=citations,
+                urls=urls, has_grounding=has_grounding, search_queries=search_queries
             )
             
         except Exception as e:
-            return APIResponse(
-                success=False,
-                error=f"解析GenAI响应失败: {str(e)}"
-            )
+            return APIResponse(success=False, error=f"解析GenAI响应失败: {str(e)}")
     
     def _extract_citations(self, grounding_supports) -> List[Dict]:
         """提取引用信息"""
