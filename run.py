@@ -35,7 +35,12 @@ async def main():
         print(f"📝 思考过程")
         print(f"1. 🚀 研究任务已启动...")
         
-        results = await engine.research(user_query=query)
+        results = await engine.research(
+            user_query=query,
+            max_search_rounds=3,
+            effort_level="medium",  # 测试中等强度：5个初始查询，3轮搜索
+            num_search_queries=5
+        )
         
         if results.get("success"):
             print("\n✅ 研究完成！")

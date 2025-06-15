@@ -56,6 +56,11 @@ class ResearchEngine:
             workflow = await self.workflow_builder.build_workflow(user_query)
             self.state_manager.set_workflow_analysis(workflow.analysis)
             self._adjust_workflow_by_effort(workflow, effort_level, max_search_rounds, num_search_queries)
+            
+            # 显示研究配置
+            config = workflow.config
+            self._notify_step(f"🎯 研究配置 ({effort_level}强度): 初始查询{config.get('initial_queries', config['queries_per_round'])}个, 最多{config['max_search_rounds']}轮搜索")
+            
             self._inject_research_functions(workflow)
             
             context = {
@@ -83,14 +88,35 @@ class ResearchEngine:
             return {"success": False, "error": error_msg}
 
     def _adjust_workflow_by_effort(self, workflow: DynamicWorkflow, effort: str, rounds: int, queries: int):
+        # 根据强度级别设置搜索配置
         config_map = {
-            "low": {"max_search_rounds": 1, "queries_per_round": 1},
-            "high": {"max_search_rounds": 5, "queries_per_round": 5},
-            "medium": {"max_search_rounds": 3, "queries_per_round": 3}
+            "low": {
+                "max_search_rounds": 1,        # 只进行1轮搜索
+                "queries_per_round": 3,        # 初始搜索3个query
+                "initial_queries": 3
+            },
+            "medium": {
+                "max_search_rounds": 3,        # 进行3轮搜索
+                "queries_per_round": 5,        # 初始搜索5个query
+                "initial_queries": 5
+            },
+            "high": {
+                "max_search_rounds": 5,        # 进行5轮搜索
+                "queries_per_round": 7,        # 初始搜索7个query
+                "initial_queries": 7
+            }
         }
-        workflow.config.update(config_map.get(effort, config_map["medium"]))
-        workflow.config["max_search_rounds"] = rounds
-        workflow.config["queries_per_round"] = queries
+        
+        # 应用强度配置
+        effort_config = config_map.get(effort, config_map["medium"])
+        workflow.config.update(effort_config)
+        
+        # 如果有自定义参数，优先使用自定义参数
+        if rounds and rounds != 3:  # 只有当rounds不是默认值时才覆盖
+            workflow.config["max_search_rounds"] = rounds
+        if queries and queries != 3:  # 只有当queries不是默认值时才覆盖
+            workflow.config["queries_per_round"] = queries
+            workflow.config["initial_queries"] = queries
 
     def _inject_research_functions(self, workflow: DynamicWorkflow):
         step_map = {
@@ -124,14 +150,16 @@ class ResearchEngine:
 
     async def _step_generate_queries(self, context: Dict[str, Any]) -> Dict[str, Any]:
         workflow: DynamicWorkflow = context["workflow"]
+        # 使用 initial_queries 作为初始查询数量
+        initial_query_count = workflow.config.get("initial_queries", workflow.config["queries_per_round"])
         queries = await self.search_agent.generate_search_queries(
-            context["user_query"], workflow.config["queries_per_round"]
+            context["user_query"], initial_query_count
         )
         self.state_manager.add_search_queries(queries)
         
         # 详细输出搜索关键词
         queries_text = "\n".join([f"  • {q}" for q in queries])
-        self._notify_step(f"🔍 生成搜索查询 ({len(queries)} 个):\n{queries_text}")
+        self._notify_step(f"🔍 生成初始搜索查询 ({len(queries)} 个):\n{queries_text}")
         
         return {**context, "search_queries": queries}
 
@@ -154,6 +182,17 @@ class ResearchEngine:
         
         # 详细输出搜索结果统计
         self._notify_step(f"✅ 搜索完成: {successful_searches}/{len(queries)} 个查询成功，共获得 {total_results} 个信息块")
+        
+        # 显示搜索结果内容摘要
+        if successful_searches > 0:
+            content_list = self.state_manager.get_search_content_list()
+            if content_list:
+                self._notify_step(f"📄 搜索结果内容摘要:")
+                for i, content in enumerate(content_list[:3], 1):  # 只显示前3个结果的摘要
+                    summary = content[:150] + "..." if len(content) > 150 else content
+                    self._notify_step(f"   {i}. {summary}")
+                if len(content_list) > 3:
+                    self._notify_step(f"   ... 还有 {len(content_list) - 3} 个结果")
         
         return {**context, "search_results": results, "current_round": 1}
 
