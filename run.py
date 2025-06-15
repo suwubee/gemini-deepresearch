@@ -17,24 +17,53 @@ async def main():
         print("错误：请在.env文件中或作为环境变量设置您的GEMINI_API_KEY。")
         return
 
-    # 简单回调，直接打印到控制台
+    # 详细回调，直接打印到控制台
+    step_counter = 1
     def step_callback(message):
-        print(f"[PROGRESS] {message}")
+        nonlocal step_counter
+        print(f"{step_counter}. ⚡ {message}")
+        step_counter += 1
+    
+    def progress_callback(message, percentage):
+        print(f"{step_counter}. [{percentage:.1f}%] {message}")
 
     engine = ResearchEngine(api_key=api_key)
-    engine.set_callbacks(step_callback=step_callback)
+    engine.set_callbacks(step_callback=step_callback, progress_callback=progress_callback)
     
     try:
-        query = "2024年AI技术的主要发展趋势是什么？"
-        print(f"🚀 开始研究: {query}")
+        query = "分析2025年人工智能的趋势"
+        print(f"📝 思考过程")
+        print(f"1. 🚀 研究任务已启动...")
         
         results = await engine.research(user_query=query)
         
         if results.get("success"):
             print("\n✅ 研究完成！")
-            print("="*20 + " 最终答案 " + "="*20)
-            print(results.get("final_answer", "没有最终答案。"))
-            print("="*50)
+            
+            # 尝试从不同位置获取最终答案
+            final_answer = None
+            task_summary = results.get("task_summary", {})
+            
+            # 检查多个可能的位置
+            if "final_answer" in results:
+                final_answer = results["final_answer"]
+            elif "final_result" in results:
+                final_answer = results["final_result"]
+            elif task_summary and "final_answer" in task_summary:
+                final_answer = task_summary["final_answer"]
+            else:
+                print(f"🔍 调试信息 - results结构: {list(results.keys())}")
+                if task_summary:
+                    print(f"🔍 调试信息 - task_summary结构: {list(task_summary.keys())}")
+            
+            if final_answer:
+                print("="*20 + " 最终答案 " + "="*20)
+                print(final_answer)
+                print("="*50)
+            else:
+                print("⚠️ 警告：未找到最终答案")
+                print("🔍 调试信息 - 完整results:")
+                print(results)
         else:
             print(f"\n❌ 研究失败: {results.get('error', '未知错误')}")
 

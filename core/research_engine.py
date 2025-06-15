@@ -68,7 +68,12 @@ class ResearchEngine:
             self.state_manager.complete_task(final_context)
             self._notify_progress("研究完成！", 100)
             
-            return {"success": True, "task_id": task_id, **self.state_manager.get_task_summary()}
+            # 确保最终答案被包含在返回结果中
+            result = {"success": True, "task_id": task_id, **self.state_manager.get_task_summary()}
+            if "final_answer" in final_context:
+                result["final_answer"] = final_context["final_answer"]
+            
+            return result
             
         except Exception as e:
             error_msg = f"研究过程中发生错误: {e}"
