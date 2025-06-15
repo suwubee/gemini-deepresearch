@@ -269,9 +269,25 @@ class StateManager:
         """获取成功的搜索结果"""
         return [r for r in self.search_results if r.success]
     
-    def get_search_content_list(self) -> List[str]:
+    def get_search_content_list(self, include_citations: bool = False) -> List[str]:
         """获取搜索内容列表"""
-        return [r.content for r in self.search_results if r.success and r.content]
+        if include_citations:
+            content_list = []
+            for r in self.search_results:
+                if r.success and r.content:
+                    content = r.content
+                    if r.citations:
+                        # 添加引用信息
+                        citations_text = "\n\n引用来源:\n"
+                        for i, citation in enumerate(r.citations[:3], 1):  # 最多显示3个引用
+                            title = citation.get('title', '未知标题')
+                            url = citation.get('url', citation.get('uri', ''))
+                            citations_text += f"{i}. {title}\n   {url}\n"
+                        content += citations_text
+                    content_list.append(content)
+            return content_list
+        else:
+            return [r.content for r in self.search_results if r.success and r.content]
     
     def get_all_citations(self) -> List[Dict]:
         """获取所有引用"""

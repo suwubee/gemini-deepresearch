@@ -123,15 +123,34 @@ class ResearchEngine:
             context["user_query"], workflow.config["queries_per_round"]
         )
         self.state_manager.add_search_queries(queries)
-        self._notify_step(f"生成查询: {queries}")
+        
+        # 详细输出搜索关键词
+        queries_text = "\n".join([f"  • {q}" for q in queries])
+        self._notify_step(f"🔍 生成搜索查询 ({len(queries)} 个):\n{queries_text}")
+        
         return {**context, "search_queries": queries}
 
     async def _step_execute_search(self, context: Dict[str, Any]) -> Dict[str, Any]:
         queries = context.get("search_queries", [context["user_query"]])
+        self._notify_step(f"🌐 开始搜索 {len(queries)} 个查询...")
+        
         results = await self.search_agent.batch_search(queries)
+        
+        # 统计搜索结果
+        successful_searches = 0
+        total_results = 0
+        
         for q, res in zip(queries, results):
             if res.get("success"):
                 self.state_manager.add_search_result(q, res)
+                successful_searches += 1
+                # 统计搜索结果数量
+                if "search_results" in res:
+                    total_results += len(res.get("search_results", []))
+        
+        # 详细输出搜索结果统计
+        self._notify_step(f"✅ 搜索完成: {successful_searches}/{len(queries)} 个查询成功，共获得 {total_results} 条结果")
+        
         return {**context, "search_results": results, "current_round": 1}
 
     async def _step_analyze_results(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -153,12 +172,19 @@ class ResearchEngine:
         current_round = context.get("current_round", 1)
         
         while current_round < workflow.config["max_search_rounds"]:
-            if context.get("is_sufficient"): break
+            if context.get("is_sufficient"): 
+                self._notify_step("ℹ️ 信息已充足，跳过后续搜索轮次")
+                break
             
             queries = context.get("follow_up_queries", [])
-            if not queries: break
+            if not queries: 
+                self._notify_step("ℹ️ 无需补充搜索查询，结束搜索")
+                break
             
-            self._notify_step(f"第 {current_round + 1} 轮补充搜索...")
+            # 显示补充搜索的查询
+            queries_text = "\n".join([f"  • {q}" for q in queries])
+            self._notify_step(f"🔄 第 {current_round + 1} 轮补充搜索 ({len(queries)} 个查询):\n{queries_text}")
+            
             context["search_queries"] = queries
             context = await self._step_execute_search(context)
             context = await self._step_analyze_results(context)
