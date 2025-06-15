@@ -738,26 +738,22 @@ def research_interface():
         st.session_state.just_completed = False
         
         # 创建队列和停止事件用于线程通信
-        import queue
-        import threading
-        
         st.session_state.queue = queue.Queue()
         st.session_state.stop_event = threading.Event()
         
-                 # 在后台线程中启动研究
-         import concurrent.futures
-         with concurrent.futures.ThreadPoolExecutor() as executor:
-             future = executor.submit(
-                 run_research_in_background,
-                 st.session_state.research_engine,
-                 user_query,
-                 max_search_rounds,
-                 effort_level,
-                 num_search_queries,
-                 st.session_state.queue,
-                 st.session_state.stop_event
-             )
-             st.session_state.current_task_future = future
+        # 在后台线程中启动研究
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(
+                run_research_in_background,
+                st.session_state.research_engine,
+                user_query,
+                max_search_rounds,
+                effort_level,
+                num_search_queries,
+                st.session_state.queue,
+                st.session_state.stop_event
+            )
+            st.session_state.current_task_future = future
         
         # 立即刷新显示进度
         st.rerun()
