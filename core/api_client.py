@@ -1,49 +1,43 @@
 """
 API客户端抽象层
-支持多种API模式的统一接口
+支持Google GenAI SDK和OpenAI HTTP API两种模式
+使用Python原生requests库
 """
 
-import asyncio
-import aiohttp
 import json
 import time
-import traceback
+import requests
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Union
-from datetime import datetime
 
+# Google GenAI SDK
 try:
-    from google.genai import Client
-    from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
 except ImportError:
-    print("警告: 未安装google-genai库，GoogleGenAI客户端将不可用")
-    Client = None
-
-from .api_config import APIConfig, APIMode, ModelConfig
-from utils.debug_logger import get_debug_logger
-from utils.helpers import extract_urls, clean_text
+    GENAI_AVAILABLE = False
+    print("⚠️ Google GenAI SDK不可用")
 
 
+@dataclass
 class APIResponse:
     """统一的API响应格式"""
+    success: bool
+    text: str = ""
+    error: str = ""
+    citations: List[Dict] = None
+    urls: List[str] = None
+    has_grounding: bool = False
+    search_queries: List[str] = None
     
-    def __init__(self, 
-                 text: str = "", 
-                 success: bool = True,
-                 error: Optional[str] = None,
-                 usage: Optional[Dict] = None,
-                 metadata: Optional[Dict] = None):
-        self.text = text
-        self.success = success
-        self.error = error
-        self.usage = usage or {}
-        self.metadata = metadata or {}
-        
-        # 搜索相关字段
-        self.has_grounding = metadata.get("has_grounding", False) if metadata else False
-        self.citations = metadata.get("citations", []) if metadata else []
-        self.search_queries = metadata.get("search_queries", []) if metadata else []
-        self.urls = metadata.get("urls", []) if metadata else []
+    def __post_init__(self):
+        if self.citations is None:
+            self.citations = []
+        if self.urls is None:
+            self.urls = []
+        if self.search_queries is None:
+            self.search_queries = []
 
 
 class BaseAPIClient(ABC):
@@ -52,23 +46,9 @@ class BaseAPIClient(ABC):
     def __init__(self, api_key: str, model_name: str):
         self.api_key = api_key
         self.model_name = model_name
-        self.debug_logger = get_debug_logger()
-        self.model_config = APIConfig.get_model_config(model_name)
-        
-        # 请求历史
-        self.request_history = []
-        
-        # 速率限制
-        self._last_request_time = 0
-        self._min_request_interval = 1.0  # 秒
     
     @abstractmethod
-    async def generate_content(self, 
-                             prompt: str, 
-                             temperature: Optional[float] = None,
-                             max_tokens: Optional[int] = None,
-                             tools: Optional[List[Dict]] = None,
-                             **kwargs) -> APIResponse:
+    def generate_content(self, prompt: str, **kwargs) -> APIResponse:
         """生成内容的抽象方法"""
         pass
     
@@ -77,395 +57,266 @@ class BaseAPIClient(ABC):
         """是否支持搜索功能"""
         pass
     
-    @abstractmethod
     def supports_tools(self) -> bool:
         """是否支持工具调用"""
-        pass
-    
-    def get_default_params(self) -> Dict[str, Any]:
-        """获取默认参数"""
-        return APIConfig.get_default_params(self.model_name)
-    
-    async def _apply_rate_limit(self):
-        """应用速率限制"""
-        if self._last_request_time > 0:
-            elapsed = time.time() - self._last_request_time
-            if elapsed < self._min_request_interval:
-                await asyncio.sleep(self._min_request_interval - elapsed)
-        self._last_request_time = time.time()
-    
-    def _log_request(self, request_type: str, prompt: str, **kwargs):
-        """记录API请求"""
-        request_id = f"{request_type}_{int(time.time() * 1000)}"
-        self.debug_logger.log_api_request(
-            request_type=request_type,
-            model=self.model_name,
-            prompt=prompt,
-            config=kwargs,
-            request_id=request_id
-        )
-        return request_id
-    
-    def _log_response(self, request_id: str, response: APIResponse):
-        """记录API响应"""
-        self.debug_logger.log_api_response(
-            request_id=request_id,
-            response_text=response.text,
-            metadata=response.metadata
-        )
+        return False
 
 
-class GoogleGenAIClient(BaseAPIClient):
+class GenAIClient(BaseAPIClient):
     """Google GenAI SDK客户端"""
     
     def __init__(self, api_key: str, model_name: str):
         super().__init__(api_key, model_name)
-        self.client = None
         
-        if Client:
-            try:
-                self.client = Client(api_key=api_key)
-            except Exception as e:
-                print(f"初始化Google GenAI客户端失败: {e}")
+        if not GENAI_AVAILABLE:
+            raise ImportError("Google GenAI SDK不可用，请安装：pip install google-generativeai")
         
-        self._min_request_interval = 2.0  # Google API需要更长间隔
-    
-    def supports_search(self) -> bool:
-        """Google GenAI支持搜索（仅限特定模型）"""
-        return APIConfig.supports_search(self.model_name)
-    
-    def supports_tools(self) -> bool:
-        """Google GenAI支持工具"""
-        return APIConfig.supports_tools(self.model_name)
-    
-    async def generate_content(self, 
-                             prompt: str, 
-                             temperature: Optional[float] = None,
-                             max_tokens: Optional[int] = None,
-                             tools: Optional[List[Dict]] = None,
-                             **kwargs) -> APIResponse:
-        """使用Google GenAI生成内容"""
-        if not self.client:
-            return APIResponse(
-                success=False,
-                error="Google GenAI客户端未正确初始化"
-            )
+        # 配置GenAI
+        genai.configure(api_key=api_key)
+        self.client = genai.GenerativeModel(model_name)
         
+        print(f"✅ GenAI客户端初始化成功: {model_name}")
+    
+    def generate_content(self, prompt: str, **kwargs) -> APIResponse:
+        """使用GenAI生成内容"""
         try:
-            await self._apply_rate_limit()
+            # 提取参数
+            temperature = kwargs.get('temperature', 0.3)
+            max_tokens = kwargs.get('max_tokens', kwargs.get('max_output_tokens', 4096))
+            tools = kwargs.get('tools')
+            use_search = kwargs.get('use_search', False)
             
-            # 准备参数
-            default_params = self.get_default_params()
-            config_params = {
-                "temperature": temperature or default_params.get("temperature", 0.1),
-                "max_output_tokens": max_tokens or default_params.get("max_output_tokens", 4096)
-            }
+            # 准备生成配置
+            generation_config = genai.types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
             
-            # 记录请求
-            request_id = self._log_request("google_genai", prompt, **config_params)
+            # 准备工具
+            search_tool = None
+            if use_search and tools == 'google_search_retrieval':
+                search_tool = 'google_search_retrieval'
+            elif use_search and isinstance(tools, list) and any(t.get('type') == 'web_search' for t in tools):
+                search_tool = 'google_search_retrieval'
             
-            # 创建配置
-            config = GenerateContentConfig(**config_params)
-            
-            # 处理工具配置
-            if tools:
-                config.tools = self._convert_tools_to_genai(tools)
-            
-            # 执行请求
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=config
+            # 调用API
+            response = self.client.generate_content(
+                prompt,
+                generation_config=generation_config,
+                tools=search_tool
             )
             
             # 解析响应
-            api_response = self._parse_genai_response(response, prompt)
-            
-            # 记录响应
-            self._log_response(request_id, api_response)
-            
-            return api_response
+            return self._parse_genai_response(response, prompt)
             
         except Exception as e:
-            error_msg = f"Google GenAI请求失败: {str(e)}"
-            self.debug_logger.log_error(
-                error_type="GoogleGenAIError",
-                error_message=error_msg,
-                context={"model": self.model_name, "prompt": prompt[:200]},
-                stacktrace=traceback.format_exc()
-            )
-            
             return APIResponse(
                 success=False,
-                error=error_msg
+                error=f"GenAI API调用失败: {str(e)}"
             )
     
-    def _convert_tools_to_genai(self, tools: List[Dict]) -> List[Tool]:
-        """将通用工具格式转换为Google GenAI格式"""
-        genai_tools = []
-        
-        for tool in tools:
-            if tool.get("type") == "web_search" or tool.get("type") == "google_search":
-                genai_tools.append(Tool(google_search=GoogleSearch()))
-        
-        return genai_tools
-    
-    def _parse_genai_response(self, response, original_prompt: str) -> APIResponse:
-        """解析Google GenAI响应"""
+    def _parse_genai_response(self, response, original_query: str) -> APIResponse:
+        """解析GenAI响应"""
         try:
             content = response.text if response and hasattr(response, 'text') else ""
             
-            # 提取元数据
-            metadata = {
-                "has_grounding": False,
-                "citations": [],
-                "search_queries": [],
-                "urls": extract_urls(content)
-            }
+            # 检查是否有grounding metadata
+            has_grounding = False
+            citations = []
+            search_queries = []
+            urls = []
             
-            # 检查grounding metadata
             if hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
                 
+                # 检查grounding metadata
                 if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
-                    metadata["has_grounding"] = True
+                    has_grounding = True
                     grounding_metadata = candidate.grounding_metadata
                     
                     # 提取搜索查询
                     if hasattr(grounding_metadata, 'web_search_queries'):
-                        metadata["search_queries"] = list(grounding_metadata.web_search_queries)
+                        search_queries = list(grounding_metadata.web_search_queries)
                     
-                    # 提取引用
-                    if hasattr(grounding_metadata, 'grounding_supports') and hasattr(grounding_metadata, 'grounding_chunks'):
-                        metadata["citations"] = self._extract_citations(
-                            grounding_metadata.grounding_supports,
-                            grounding_metadata.grounding_chunks
-                        )
+                    # 提取grounding supports（引用信息）
+                    if hasattr(grounding_metadata, 'grounding_supports'):
+                        citations = self._extract_citations(grounding_metadata.grounding_supports)
+                        # 从citations中提取URLs
+                        urls = [cite.get('url', '') for cite in citations if cite.get('url')]
             
             return APIResponse(
-                text=clean_text(content),
                 success=True,
-                metadata=metadata
+                text=content,
+                citations=citations,
+                urls=urls,
+                has_grounding=has_grounding,
+                search_queries=search_queries
             )
             
         except Exception as e:
             return APIResponse(
                 success=False,
-                error=f"解析Google GenAI响应失败: {str(e)}"
+                error=f"解析GenAI响应失败: {str(e)}"
             )
     
-    def _extract_citations(self, grounding_supports, grounding_chunks) -> List[Dict]:
+    def _extract_citations(self, grounding_supports) -> List[Dict]:
         """提取引用信息"""
         citations = []
-        
         try:
             for support in grounding_supports:
-                if hasattr(support, 'segment') and hasattr(support, 'grounding_chunk_indices'):
-                    start_index = getattr(support.segment, 'start_index', 0) 
-                    end_index = getattr(support.segment, 'end_index', 0)
-                    
-                    if end_index is None:
-                        continue
-                    
-                    # 获取对应的grounding chunks
-                    for chunk_idx in support.grounding_chunk_indices:
-                        if chunk_idx < len(grounding_chunks):
-                            chunk = grounding_chunks[chunk_idx]
-                            if hasattr(chunk, 'web') and chunk.web:
-                                title = getattr(chunk.web, 'title', '') or 'Unknown Source'
-                                uri = getattr(chunk.web, 'uri', '#')
-                                
-                                # 提取域名
-                                domain = 'Unknown Domain'
-                                if uri and '//' in uri:
-                                    try:
-                                        domain = uri.split('//')[1].split('/')[0]
-                                    except:
-                                        domain = 'Unknown Domain'
-                                
-                                citations.append({
-                                    "title": title,
-                                    "url": uri,
-                                    "description": f"来源: {domain}",
-                                    "start_index": start_index,
-                                    "end_index": end_index
-                                })
+                if hasattr(support, 'segment') and hasattr(support.segment, 'text'):
+                    citation = {
+                        'text': support.segment.text,
+                        'title': getattr(support, 'title', ''),
+                        'url': getattr(support, 'url', ''),
+                        'snippet': support.segment.text[:200] + '...' if len(support.segment.text) > 200 else support.segment.text
+                    }
+                    citations.append(citation)
         except Exception as e:
-            print(f"提取引用信息失败: {e}")
+            print(f"提取引用失败: {e}")
         
         return citations
-
-
-class OpenAICompatibleClient(BaseAPIClient):
-    """OpenAI兼容HTTP客户端"""
-    
-    def __init__(self, api_key: str, model_name: str, base_url: Optional[str] = None):
-        super().__init__(api_key, model_name)
-        
-        # 获取配置
-        if base_url:
-            self.base_url = base_url
-        elif self.model_config and self.model_config.base_url:
-            self.base_url = self.model_config.base_url
-        else:
-            openai_config = APIConfig.get_openai_config()
-            self.base_url = openai_config.base_url
-        
-        # HTTP会话
-        self.session = None
-        self._min_request_interval = 0.5  # OpenAI兼容接口通常更快
-    
-    async def _ensure_session(self):
-        """确保HTTP会话存在"""
-        if not self.session:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(timeout=timeout)
     
     def supports_search(self) -> bool:
-        """OpenAI兼容客户端通常不支持原生搜索"""
-        return False  # 可以通过配置改变
+        """GenAI支持搜索"""
+        return True
     
     def supports_tools(self) -> bool:
-        """OpenAI兼容客户端支持工具"""
-        return APIConfig.supports_tools(self.model_name)
+        """GenAI支持工具调用"""
+        return True
+
+
+class OpenAIClient(BaseAPIClient):
+    """OpenAI HTTP API客户端（使用requests）"""
     
-    async def generate_content(self, 
-                             prompt: str, 
-                             temperature: Optional[float] = None,
-                             max_tokens: Optional[int] = None,
-                             tools: Optional[List[Dict]] = None,
-                             **kwargs) -> APIResponse:
-        """使用OpenAI兼容API生成内容"""
+    def __init__(self, api_key: str, model_name: str, base_url: str = "https://api.openai.com/v1", timeout: int = 30):
+        super().__init__(api_key, model_name)
+        self.base_url = base_url.rstrip('/')
+        self.timeout = timeout
+        
+        # 验证API连接
+        self._validate_connection()
+        
+        print(f"✅ OpenAI客户端初始化成功: {model_name} @ {base_url}")
+    
+    def _validate_connection(self):
+        """验证API连接"""
         try:
-            await self._ensure_session()
-            await self._apply_rate_limit()
-            
-            # 准备参数
-            default_params = self.get_default_params()
-            
-            payload = {
-                "model": self.model_name,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature or default_params.get("temperature", 0.3),
-                "max_tokens": max_tokens or default_params.get("max_tokens", 4096)
-            }
-            
-            # 处理工具
-            if tools and self.supports_tools():
-                payload["tools"] = self._convert_tools_to_openai(tools)
-                payload["tool_choice"] = "auto"
-            
-            # 记录请求
-            request_id = self._log_request("openai_compatible", prompt, **payload)
-            
-            # 准备headers
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
             }
             
-            # 如果有自定义headers
-            if self.model_config and self.model_config.headers:
-                headers.update(self.model_config.headers)
+            response = requests.get(
+                f"{self.base_url}/models",
+                headers=headers,
+                timeout=5
+            )
             
-            # 执行请求
-            async with self.session.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=headers
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    api_response = self._parse_openai_response(data)
-                else:
-                    error_text = await response.text()
-                    api_response = APIResponse(
-                        success=False,
-                        error=f"HTTP {response.status}: {error_text}"
-                    )
-            
-            # 记录响应
-            self._log_response(request_id, api_response)
-            
-            return api_response
+            if response.status_code != 200:
+                print(f"⚠️ API连接验证失败: {response.status_code}")
             
         except Exception as e:
-            error_msg = f"OpenAI兼容API请求失败: {str(e)}"
-            self.debug_logger.log_error(
-                error_type="OpenAICompatibleError",
-                error_message=error_msg,
-                context={"model": self.model_name, "prompt": prompt[:200]},
-                stacktrace=traceback.format_exc()
-            )
-            
-            return APIResponse(
-                success=False,
-                error=error_msg
-            )
+            print(f"⚠️ API连接验证异常: {e}")
     
-    def _convert_tools_to_openai(self, tools: List[Dict]) -> List[Dict]:
-        """将通用工具格式转换为OpenAI格式"""
-        openai_tools = []
-        
-        for tool in tools:
-            if tool.get("type") == "web_search":
-                # OpenAI兼容的搜索工具定义
-                openai_tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "description": "Search the web for information",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {"type": "string", "description": "Search query"}
-                            },
-                            "required": ["query"]
-                        }
-                    }
-                })
-        
-        return openai_tools
-    
-    def _parse_openai_response(self, data: Dict) -> APIResponse:
-        """解析OpenAI兼容响应"""
+    def generate_content(self, prompt: str, **kwargs) -> APIResponse:
+        """使用OpenAI API生成内容"""
         try:
-            if "choices" not in data or not data["choices"]:
-                return APIResponse(
-                    success=False,
-                    error="响应中没有选择项"
-                )
+            # 提取参数
+            temperature = kwargs.get('temperature', 0.3)
+            max_tokens = kwargs.get('max_tokens', kwargs.get('max_output_tokens', 4096))
             
-            choice = data["choices"][0]
-            content = choice.get("message", {}).get("content", "")
-            
-            # 使用情况
-            usage = data.get("usage", {})
-            
-            # 元数据
-            metadata = {
-                "has_grounding": False,
-                "citations": [],
-                "search_queries": [],
-                "urls": extract_urls(content),
-                "finish_reason": choice.get("finish_reason", "stop")
+            # 准备请求
+            headers = {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
             }
             
-            return APIResponse(
-                text=clean_text(content),
-                success=True,
-                usage=usage,
-                metadata=metadata
+            data = {
+                'model': self.model_name,
+                'messages': [
+                    {'role': 'user', 'content': prompt}
+                ],
+                'temperature': temperature,
+                'max_tokens': max_tokens
+            }
+            
+            # 发送请求
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=self.timeout
             )
             
+            # 解析响应
+            return self._parse_openai_response(response)
+            
+        except Exception as e:
+            return APIResponse(
+                success=False,
+                error=f"OpenAI API调用失败: {str(e)}"
+            )
+    
+    def _parse_openai_response(self, response: requests.Response) -> APIResponse:
+        """解析OpenAI响应"""
+        try:
+            if response.status_code != 200:
+                return APIResponse(
+                    success=False,
+                    error=f"HTTP {response.status_code}: {response.text}"
+                )
+            
+            data = response.json()
+            
+            # 提取内容
+            if 'choices' in data and len(data['choices']) > 0:
+                content = data['choices'][0]['message']['content']
+                
+                return APIResponse(
+                    success=True,
+                    text=content,
+                    has_grounding=False  # OpenAI不支持grounding
+                )
+            else:
+                return APIResponse(
+                    success=False,
+                    error="响应中没有找到有效内容"
+                )
+                
         except Exception as e:
             return APIResponse(
                 success=False,
                 error=f"解析OpenAI响应失败: {str(e)}"
             )
     
-    async def close(self):
-        """关闭HTTP会话"""
-        if self.session:
-            await self.session.close()
-            self.session = None 
+    def supports_search(self) -> bool:
+        """OpenAI不支持原生搜索"""
+        return False
+
+
+class APIClientFactory:
+    """API客户端工厂"""
+    
+    @staticmethod
+    def create_client(mode: str, api_key: str, model_name: str, **kwargs) -> BaseAPIClient:
+        """创建API客户端"""
+        mode = mode.lower()
+        
+        if mode == 'genai' or mode == 'google':
+            return GenAIClient(api_key, model_name)
+        elif mode == 'openai':
+            base_url = kwargs.get('base_url', 'https://api.openai.com/v1')
+            timeout = kwargs.get('timeout', 30)
+            return OpenAIClient(api_key, model_name, base_url, timeout)
+        else:
+            raise ValueError(f"不支持的API模式: {mode}")
+    
+    @staticmethod
+    def get_available_modes() -> List[str]:
+        """获取可用的API模式"""
+        modes = []
+        if GENAI_AVAILABLE:
+            modes.append('genai')
+        modes.append('openai')  # requests总是可用的
+        return modes 

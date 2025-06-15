@@ -8,10 +8,7 @@ import json
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime
 
-from typing import Optional
-from .api_factory import APIClientFactory
 from .api_client import BaseAPIClient, APIResponse
-from .api_config import APIConfig, APIMode
 from utils.prompts import PromptTemplates
 from utils.helpers import extract_json_from_text, safe_json_loads
 
@@ -154,27 +151,17 @@ class DynamicWorkflow:
 
 
 class DynamicWorkflowBuilder:
-    """动态工作流构建器 - 支持双模式API"""
+    """动态工作流构建器"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash-preview-05-20", preferred_mode: Optional[APIMode] = None):
-        self.api_key = api_key
-        self.model_name = model_name
-        self.preferred_mode = preferred_mode
+    def __init__(self, client: BaseAPIClient):
+        self.client = client
+        self.model_name = client.model_name
         
-        # 使用工厂创建客户端
-        self.client = APIClientFactory.create_analysis_client(
-            api_key=api_key,
-            model_name=model_name,
-            preferred_mode=preferred_mode
-        )
-        
-        # 打印客户端信息
-        client_info = APIClientFactory.get_client_info(model_name)
         print(f"🏗️ 工作流构建器初始化:")
-        print(f"  模型: {model_name}")
-        print(f"  模式: {client_info.get('mode', 'unknown')}")
+        print(f"  模型: {self.model_name}")
+        print(f"  客户端类型: {self.client.__class__.__name__}")
     
-    async def analyze_task_and_build_workflow(self, user_query: str) -> DynamicWorkflow:
+    def analyze_task_and_build_workflow(self, user_query: str) -> DynamicWorkflow:
         """
         分析用户任务并构建动态工作流
         
@@ -185,57 +172,45 @@ class DynamicWorkflowBuilder:
             构建好的工作流
         """
         # 1. 分析任务类型
-        task_analysis = await self._analyze_task_type(user_query)
+        task_analysis = self._analyze_task_type(user_query)
         
         # 2. 基于分析结果构建工作流
         workflow = self._build_workflow_from_analysis(task_analysis, user_query)
         
         return workflow
     
-    async def _analyze_task_type(self, user_query: str) -> Dict[str, Any]:
+    def _analyze_task_type(self, user_query: str) -> Dict[str, Any]:
         """分析任务类型"""
         print(f"开始分析任务类型: {user_query[:50]}...")
         
-        if not self.client:
-            print("没有可用的客户端，使用默认分析")
-            return self._get_default_task_analysis(user_query)
-        
         try:
-            print("生成任务分析提示词...")
-            prompt = PromptTemplates.task_analysis_prompt(user_query)
+            # 构建任务分析提示词
+            analysis_prompt = PromptTemplates.task_analysis_prompt(user_query)
             
-            print("调用Gemini API进行任务分析...")
-            
-            # 确保prompt是UTF-8编码的字符串
-            if isinstance(prompt, str):
-                prompt_content = prompt.encode('utf-8').decode('utf-8')
-            else:
-                prompt_content = str(prompt)
-            
-            # 使用统一的客户端接口
-            response = await self.client.generate_content(
-                prompt=prompt_content,
+            # 调用API进行任务分析
+            response = self.client.generate_content(
+                analysis_prompt,
                 temperature=0.1,
                 max_tokens=4096
             )
             
-            print("API调用完成，解析响应...")
-            
-            if response.success and response.text:
-                print(f"收到响应: {response.text[:200]}...")
-                analysis = extract_json_from_text(response.text)
-                if analysis:
-                    print("任务分析成功")
-                    return analysis
+            if response.success:
+                # 解析AI响应
+                analysis_result = extract_json_from_text(response.text)
+                
+                if analysis_result:
+                    print(f"任务分析完成: {analysis_result.get('task_type', 'unknown')}")
+                    return analysis_result
                 else:
-                    print("JSON解析失败，使用默认分析")
+                    print("AI分析结果解析失败，使用默认分析")
+                    return self._get_default_task_analysis(user_query)
             else:
-                print(f"API调用失败或空响应: {response.error if response.error else '未知错误'}，使用默认分析")
-            
+                print(f"任务分析API调用失败: {response.error}")
+                return self._get_default_task_analysis(user_query)
+                
         except Exception as e:
-            print(f"任务分析失败: {e}，使用默认分析")
-        
-        return self._get_default_task_analysis(user_query)
+            print(f"任务分析失败: {e}")
+            return self._get_default_task_analysis(user_query)
     
     def _get_default_task_analysis(self, user_query: str) -> Dict[str, Any]:
         """获取默认任务分析（当AI分析失败时的fallback）"""
