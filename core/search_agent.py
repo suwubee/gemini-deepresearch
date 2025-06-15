@@ -7,13 +7,9 @@ import time
 import traceback
 from typing import List, Dict, Optional, Any
 from datetime import datetime
+import asyncio
 
-try:
-    from google.genai import Client
-    from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
-except ImportError:
-    print("警告: 未安装必要的库，请运行: pip install google-genai")
-    Client = None
+from .api_client import GeminiApiClient
 
 from utils.helpers import (
     extract_json_from_text, 
@@ -30,17 +26,13 @@ class SearchAgent:
     def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
         self.api_key = api_key
         self.model_name = model_name
-        self.client = None
+        self.client = GeminiApiClient(api_key=api_key)
         self.search_history = []
         self.debug_logger = get_debug_logger()
-        
-        # 初始化客户端
-        if Client:
-            self.client = Client(api_key=api_key)
     
     def _is_available(self) -> bool:
         """检查搜索代理是否可用"""
-        return Client is not None and self.client is not None
+        return self.client is not None
     
     async def search_with_grounding(self, query: str, use_search: bool = True) -> Dict[str, Any]:
         """
@@ -54,11 +46,13 @@ class SearchAgent:
             包含搜索结果和元数据的字典
         """
         if not self._is_available():
-            raise Exception("搜索代理不可用，请检查 google-genai 库是否正确安装")
+            raise Exception("搜索代理不可用，请检查 API 客户端是否正确初始化")
         
         try:
             search_start_time = datetime.now()
             request_id = f"search_{int(time.time() * 1000)}"
+            
+            tools = [{"google_search": {}}] if use_search else None
             
             # Debug: 记录API请求
             config_dict = {
@@ -78,39 +72,33 @@ class SearchAgent:
             if hasattr(self, '_last_request_time'):
                 time_since_last = time.time() - self._last_request_time
                 if time_since_last < 2.0:
-                    time.sleep(2.0 - time_since_last)
+                    await asyncio.sleep(2.0 - time_since_last)
             
             self._last_request_time = time.time()
             
-            # 配置工具和参数
-            config = GenerateContentConfig(
+            response = await self.client.generate_content(
+                model_name=self.model_name,
+                prompt=query,
+                tools=tools,
                 temperature=0.1,
                 max_output_tokens=8192,
             )
             
-            if use_search:
-                google_search_tool = Tool(google_search=GoogleSearch())
-                config.tools = [google_search_tool]
-            
-            # 使用 google.genai.Client 进行搜索
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=query,
-                config=config
-            )
-            
             search_duration = (datetime.now() - search_start_time).total_seconds()
-            
+
+            if "error" in response:
+                raise Exception(f"API Error: {response['error'].get('message', 'Unknown error')}")
+
             # Debug: 记录API响应
-            response_text = response.text if response and hasattr(response, 'text') else ""
+            response_text = self._get_text_from_response(response)
             metadata = {}
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+            if response.get("candidates"):
+                candidate = response["candidates"][0]
+                if candidate.get("groundingMetadata"):
                     metadata["has_grounding"] = True
-                    if hasattr(candidate.grounding_metadata, 'web_search_queries'):
-                        metadata["search_queries"] = list(candidate.grounding_metadata.web_search_queries)
-            
+                    if candidate["groundingMetadata"].get("webSearchQueries"):
+                        metadata["search_queries"] = candidate["groundingMetadata"]["webSearchQueries"]
+
             self.debug_logger.log_api_response(
                 request_id=request_id,
                 response_text=response_text,
@@ -155,40 +143,40 @@ class SearchAgent:
             )
             
             return error_result
-    
-    def _parse_search_response(self, response, original_query: str, duration: float) -> Dict[str, Any]:
+
+    def _get_text_from_response(self, response: Dict[str, Any]) -> str:
+        """Extracts text from the raw API response."""
+        try:
+            return response["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            return ""
+
+    def _parse_search_response(self, response: Dict[str, Any], original_query: str, duration: float) -> Dict[str, Any]:
         """解析搜索响应"""
         try:
-            content = response.text if response and hasattr(response, 'text') else ""
+            content = self._get_text_from_response(response)
             
             # 检查是否有 grounding metadata
             has_grounding = False
             citations = []
             search_queries = []
-            grounding_chunks = []
+            grounding_chunks_count = 0
             
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
+            candidates = response.get("candidates", [])
+            if candidates:
+                candidate = candidates[0]
+                grounding_metadata = candidate.get("groundingMetadata")
                 
-                # 检查 grounding metadata
-                if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+                if grounding_metadata:
                     has_grounding = True
-                    grounding_metadata = candidate.grounding_metadata
+                    search_queries = grounding_metadata.get("webSearchQueries", [])
+                    grounding_chunks = grounding_metadata.get("groundingChunks", [])
+                    grounding_chunks_count = len(grounding_chunks)
                     
-                    # 提取搜索查询
-                    if hasattr(grounding_metadata, 'web_search_queries'):
-                        search_queries = list(grounding_metadata.web_search_queries)
-                    
-                    # 提取 grounding chunks
-                    if hasattr(grounding_metadata, 'grounding_chunks'):
-                        grounding_chunks = grounding_metadata.grounding_chunks
-                    
-                    # 提取 grounding supports（引用信息）
-                    if hasattr(grounding_metadata, 'grounding_supports'):
-                        citations = self._extract_citations(
-                            grounding_metadata.grounding_supports,
-                            grounding_chunks
-                        )
+                    citations = self._extract_citations(
+                        grounding_metadata.get("groundingSupports", []),
+                        grounding_chunks
+                    )
             
             # 提取URL
             urls = extract_urls(content)
@@ -205,7 +193,7 @@ class SearchAgent:
                 "urls": urls,
                 "has_grounding": has_grounding,
                 "search_queries": search_queries,
-                "grounding_chunks": len(grounding_chunks),
+                "grounding_chunks": grounding_chunks_count,
                 "duration": duration
             }
         except Exception as e:
@@ -221,103 +209,86 @@ class SearchAgent:
                 "duration": duration
             }
     
-    def _extract_citations(self, grounding_supports, grounding_chunks) -> List[Dict]:
+    def _extract_citations(self, grounding_supports: List[Dict], grounding_chunks: List[Dict]) -> List[Dict]:
         """提取引用信息"""
         citations = []
         
         for support in grounding_supports:
-            if hasattr(support, 'segment') and hasattr(support, 'grounding_chunk_indices'):
-                start_index = getattr(support.segment, 'start_index', 0) 
-                end_index = getattr(support.segment, 'end_index', 0)
-                
-                if end_index is None:
-                    continue  # 跳过没有end_index的项
-                
-                # 获取对应的grounding chunks  
-                chunk_citations = []
-                for chunk_idx in support.grounding_chunk_indices:
-                    if chunk_idx < len(grounding_chunks):
-                        chunk = grounding_chunks[chunk_idx]
-                        if hasattr(chunk, 'web') and chunk.web:
-                            title = getattr(chunk.web, 'title', '') or 'Unknown Source'
-                            uri = getattr(chunk.web, 'uri', '#')
-                            
-                            # 清理标题（移除文件扩展名等）
-                            if title and isinstance(title, str) and '.' in title:
-                                title = title.split('.')[0]
-                            
-                            # 提取域名
-                            domain = 'Unknown Domain'
-                            if uri and '//' in uri:
-                                try:
-                                    domain = uri.split('//')[1].split('/')[0]
-                                except:
-                                    domain = 'Unknown Domain'
-                            
-                            chunk_citations.append({
-                                "title": title,
-                                "url": uri,
-                                "description": f"来源: {domain}"
-                            })
-                
-                if chunk_citations:
-                    # 为了兼容性，我们为每个chunk创建单独的citation
-                    for chunk_citation in chunk_citations:
-                        citations.append({
-                            "title": chunk_citation["title"],
-                            "url": chunk_citation["url"], 
-                            "description": chunk_citation["description"],
-                            "start_index": start_index,
-                            "end_index": end_index
+            segment = support.get("segment", {})
+            start_index = segment.get("startIndex", 0)
+            end_index = segment.get("endIndex")
+
+            if end_index is None:
+                continue
+
+            chunk_citations = []
+            for chunk_idx in support.get("groundingChunkIndices", []):
+                if chunk_idx < len(grounding_chunks):
+                    chunk = grounding_chunks[chunk_idx]
+                    web_info = chunk.get("web")
+                    if web_info:
+                        title = web_info.get("title", "Unknown Source")
+                        uri = web_info.get("uri", "#")
+                        
+                        if title and isinstance(title, str) and '.' in title:
+                            title = title.split('.')[0]
+                        
+                        domain = 'Unknown Domain'
+                        if uri and '//' in uri:
+                            try:
+                                domain = uri.split('//')[1].split('/')[0]
+                            except Exception:
+                                domain = 'Unknown Domain'
+                        
+                        chunk_citations.append({
+                            "title": title,
+                            "url": uri,
+                            "description": f"来源: {domain}"
                         })
+            
+            if chunk_citations:
+                for chunk_citation in chunk_citations:
+                    citations.append({
+                        **chunk_citation,
+                        "start_index": start_index,
+                        "end_index": end_index
+                    })
         
         return citations
     
     async def generate_search_queries(self, user_query: str, num_queries: int = 3) -> List[str]:
         """生成搜索查询"""
         if not self._is_available():
-            return [user_query]  # 降级到原始查询
-        
+            return [user_query]
+
         try:
-            prompt = f"""
-            基于以下用户查询，生成{num_queries}个不同角度的搜索查询，帮助全面研究这个话题。
+            prompt = PromptTemplates.search_query_generation_prompt(user_query, num_queries)
             
-            用户查询: {user_query}
-            
-            请返回JSON格式的查询列表，例如：
-            {{"queries": ["查询1", "查询2", "查询3"]}}
-            """
-            
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=GenerateContentConfig(
-                    temperature=0.3,
-                    max_output_tokens=1024,
-                )
+            response = await self.client.generate_content(
+                model_name=self.model_name,
+                prompt=prompt,
+                temperature=0.3,
+                max_output_tokens=1024,
             )
+
+            if "error" in response:
+                raise Exception(f"API Error: {response['error'].get('message', 'Unknown error')}")
+
+            response_text = self._get_text_from_response(response)
+            if response_text:
+                result = extract_json_from_text(response_text)
+                if result and "query" in result and isinstance(result["query"], list):
+                    return result["query"][:num_queries]
             
-            if response and response.text:
-                result = extract_json_from_text(response.text)
-                if result and "queries" in result:
-                    return result["queries"][:num_queries]
-            
-            return [user_query]  # 降级
+            return [user_query]
             
         except Exception:
-            return [user_query]  # 降级
+            return [user_query]
     
     async def batch_search(self, queries: List[str]) -> List[Dict[str, Any]]:
         """批量搜索"""
-        results = []
-        
-        for query in queries:
-            result = await self.search_with_grounding(query)
-            results.append(result)
-            
-            # 添加延迟避免速率限制
-            time.sleep(1)
-        
+        tasks = [self.search_with_grounding(query) for query in queries]
+        results = await asyncio.gather(*tasks)
         return results
     
     def get_search_statistics(self) -> Dict[str, Any]:
@@ -327,7 +298,7 @@ class SearchAgent:
         
         total_searches = len(self.search_history)
         successful_searches = len([h for h in self.search_history if h.get("has_grounding", False)])
-        avg_duration = sum(h.get("duration", 0) for h in self.search_history) / total_searches
+        avg_duration = sum(h.get("duration", 0) for h in self.search_history) / total_searches if total_searches else 0
         
         return {
             "total_searches": total_searches,
@@ -339,4 +310,8 @@ class SearchAgent:
     
     def clear_history(self):
         """清除搜索历史"""
-        self.search_history = [] 
+        self.search_history = []
+    
+    async def close(self):
+        """关闭客户端会话"""
+        await self.client.close() 

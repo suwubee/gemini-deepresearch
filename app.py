@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Dict, Any
 from enum import Enum
 import queue
+import atexit
 
 # from streamlit_local_storage import LocalStorage  # 暂时禁用，有bug
 import streamlit.components.v1 as components

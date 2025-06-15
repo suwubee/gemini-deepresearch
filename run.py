@@ -8,6 +8,8 @@ import os
 import sys
 import subprocess
 import time
+import asyncio
+from core.research_engine import ResearchEngine
 
 def check_dependencies():
     """检查依赖是否已安装"""
@@ -21,7 +23,41 @@ def check_dependencies():
         print("请运行: pip install -r requirements.txt")
         return False
 
-def main():
+async def main():
+    """主异步函数，用于命令行研究"""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        print("错误：请设置 GEMINI_API_KEY 环境变量")
+        return
+
+    engine = ResearchEngine(api_key=api_key)
+    
+    try:
+        # 示例：执行一次研究
+        query = "2024年AI技术的主要发展趋势是什么？"
+        print(f"🚀 开始研究: {query}")
+        
+        results = await engine.research(
+            user_query=query,
+            max_search_rounds=3,
+            effort_level="medium",
+            num_search_queries=3
+        )
+        
+        if results.get("success"):
+            print("\n✅ 研究完成！")
+            print("="*20 + " 最终答案 " + "="*20)
+            print(results.get("final_answer", "没有最终答案。"))
+            print("="*50)
+        else:
+            print(f"\n❌ 研究失败: {results.get('error', '未知错误')}")
+
+    finally:
+        # 确保客户端被关闭
+        await engine.close_clients()
+        print("✅ 客户端已关闭。")
+
+def main_streamlit():
     """主函数"""
     print("🔍 DeepSearch - 智能深度研究助手")
     print("=" * 50)
@@ -60,4 +96,6 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    # 启用调试日志
+    asyncio.run(main())
+    sys.exit(main_streamlit()) 

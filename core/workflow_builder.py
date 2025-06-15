@@ -1,21 +1,19 @@
 """
 动态工作流构建器
-基于任务分析自动构建最优工作流
+参考原始backend/src/agent/planner.py的设计
 """
 
 import asyncio
 import json
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime
+import time
 
-try:
-    from google.genai import Client
-    from google.genai.types import GenerateContentConfig
-except ImportError:
-    Client = None
-
+from .state_manager import TaskStatus, WorkflowAnalysis
+from .api_client import GeminiApiClient
 from utils.prompts import PromptTemplates
 from utils.helpers import extract_json_from_text, safe_json_loads
+from utils.debug_logger import get_debug_logger
 
 
 class WorkflowStep:
@@ -60,99 +58,167 @@ class WorkflowStep:
 
 
 class DynamicWorkflow:
-    """动态工作流"""
+    """动态工作流，包含步骤和配置"""
+    def __init__(self, workflow_id: str, analysis: Dict[str, Any]):
+        self.workflow_id = workflow_id
+        self.analysis = analysis
+        self.steps: List['WorkflowStep'] = []
+        self.config = {
+            "max_search_rounds": 3,
+            "queries_per_round": 3,
+            "stop_on_sufficient": True,
+        }
     
-    def __init__(self, workflow_config: Dict[str, Any], steps_config: List[Dict[str, str]]):
-        self.config = workflow_config
-        self.steps_config = steps_config
-        self.steps = []
-        self.current_step_index = 0
-        self.context = {}
-        self.start_time = None
-        self.end_time = None
-        self.status = "ready"  # ready, running, completed, failed
-    
-    def add_step(self, step: WorkflowStep):
-        """添加步骤"""
+    def add_step(self, step_name: str, step_function: Any, description: str):
+        step = WorkflowStep(step_name, step_function, description)
         self.steps.append(step)
+
+
+class DynamicWorkflowBuilder:
+    """动态工作流构建器，参考原始planner"""
     
-    async def execute(self, initial_context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """执行工作流"""
-        self.status = "running"
-        self.start_time = datetime.now()
-        self.context = initial_context or {}
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+        self.api_key = api_key
+        self.model_name = model_name
+        self.client = GeminiApiClient(api_key=api_key)
+        self.debug_logger = get_debug_logger()
+
+    async def build_workflow(self, user_query: str) -> DynamicWorkflow:
+        """分析用户查询并构建动态工作流"""
+        self.debug_logger.log_workflow_step(
+            "build_workflow_start", "running", {"user_query": user_query}
+        )
         
         try:
-            for i, step_config in enumerate(self.steps_config):
-                self.current_step_index = i
-                
-                # 更新上下文
-                self.context["current_step"] = step_config["name"]
-                self.context["step_index"] = i
-                self.context["total_steps"] = len(self.steps_config)
-                
-                # 执行步骤
-                step_result = await self._execute_step(step_config, self.context)
-                
-                # 更新上下文
-                if isinstance(step_result, dict):
-                    self.context.update(step_result)
-                else:
-                    self.context[f"step_{i}_result"] = step_result
+            prompt = PromptTemplates.task_analysis_prompt(user_query)
             
-            self.status = "completed"
-            self.end_time = datetime.now()
+            # Debug: Log API request for task analysis
+            request_id = f"task_analysis_{int(time.time() * 1000)}"
+            self.debug_logger.log_api_request(
+                "task_analysis", self.model_name, prompt, {}, request_id
+            )
+
+            response = await self.client.generate_content(
+                model_name=self.model_name,
+                prompt=prompt,
+                temperature=0.1,
+                max_output_tokens=2048,
+            )
             
-            return self.context
+            # Debug: Log API response
+            response_text = ""
+            if "error" not in response:
+                try:
+                    response_text = response["candidates"][0]["content"]["parts"][0]["text"]
+                except (KeyError, IndexError):
+                    pass
             
-        except Exception as e:
-            self.status = "failed"
-            self.end_time = datetime.now()
-            raise e
-    
-    def get_progress(self) -> Dict[str, Any]:
-        """获取进度信息"""
-        completed_steps = len([s for s in self.steps if s.status == "completed"])
-        failed_steps = len([s for s in self.steps if s.status == "failed"])
+            self.debug_logger.log_api_response(request_id, response_text, response)
+
+            if "error" in response:
+                raise Exception(f"API Error: {response['error'].get('message', 'Unknown error')}")
+
+            analysis = extract_json_from_text(response_text)
+            
+            if not analysis or "task_type" not in analysis:
+                self.debug_logger.log_warning(
+                    "TaskAnalysisWarning", 
+                    "Failed to parse task analysis, using fallback.",
+                    {"raw_response": response_text}
+                )
+                analysis = self._fallback_analysis()
+            
+            workflow = DynamicWorkflow(f"wf_{int(time.time())}", analysis)
+            self._build_research_workflow(workflow, user_query, analysis)
+            
+            self.debug_logger.log_workflow_step(
+                "build_workflow_complete", "completed", {"workflow_id": workflow.workflow_id, "steps_count": len(workflow.steps)}
+            )
+            
+            return workflow
         
+        except Exception as e:
+            self.debug_logger.log_error(
+                "WorkflowBuildError", str(e), {"user_query": user_query}
+            )
+            analysis = self._fallback_analysis()
+            workflow = DynamicWorkflow(f"wf_fallback_{int(time.time())}", analysis)
+            self._build_research_workflow(workflow, user_query, analysis)
+            return workflow
+    
+    def _fallback_analysis(self) -> Dict[str, Any]:
+        """提供一个备用的分析结果，以防AI分析失败"""
         return {
-            "total_steps": len(self.steps_config),
-            "completed_steps": completed_steps,
-            "failed_steps": failed_steps,
-            "current_step": self.current_step_index,
-            "progress_percentage": (completed_steps / len(self.steps_config)) * 100 if self.steps_config else 0,
-            "status": self.status,
-            "elapsed_time": (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
+            "task_type": "Deep Research",
+            "complexity": "Medium",
+            "requires_search": True,
+            "requires_multiple_rounds": True,
+            "estimated_steps": 5,
+            "estimated_time": "3-8 minutes",
+            "reasoning": "Fallback due to analysis failure. Assuming standard research task."
         }
 
-    async def _execute_step(self, step_config: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
-        """执行单个步骤"""
-        step_name = step_config["name"]
-        step_description = step_config["description"]
+    def _build_research_workflow(self, workflow: DynamicWorkflow, user_query: str, analysis: Dict):
+        """根据分析结果构建具体的研究工作流步骤"""
+        task_type = analysis.get("task_type", "Deep Research")
         
-        print(f"开始执行步骤: {step_name} - {step_description}")
-        
-        # 创建步骤实例
-        step = WorkflowStep(step_name, step_description, self._get_step_function(step_name), **context)
-        
-        try:
-            # 执行步骤
-            step_result = await step.execute(context)
-            
-            print(f"步骤 {step_name} 执行完成")
-            return step_result
-            
-        except Exception as e:
-            print(f"步骤 {step_name} 执行失败: {e}")
-            raise e
+        # 简化逻辑：当前只实现一种深度研究工作流
+        if task_type in ["Deep Research", "Comprehensive Task"]:
+            workflow.add_step(
+                "generate_search_queries", 
+                self._generate_search_queries_step,
+                "生成初始搜索查询"
+            )
+            workflow.add_step(
+                "execute_search", 
+                self._execute_search_step,
+                "执行并行搜索"
+            )
+            workflow.add_step(
+                "analyze_search_results", 
+                self._analyze_search_results_step,
+                "分析搜索结果并进行AI反思"
+            )
+            workflow.add_step(
+                "supplementary_search",
+                self._supplementary_search_step,
+                "进行补充搜索以填补信息空白"
+            )
+            workflow.add_step(
+                "generate_final_answer", 
+                self._generate_final_answer_step,
+                "综合所有信息生成最终研究报告"
+            )
+        else: # Q&A, Code Generation etc. use a simpler workflow
+            workflow.add_step(
+                "simple_search",
+                self._simple_search_step,
+                "执行单轮搜索"
+            )
+            workflow.add_step(
+                "generate_simple_answer",
+                self._generate_simple_answer_step,
+                "根据搜索结果生成答案"
+            )
 
-    def _get_step_function(self, step_name: str) -> Callable:
-        """获取步骤函数"""
-        # 实现步骤函数获取逻辑
-        # 这里需要根据步骤名称返回相应的函数
-        # 可以使用字典或其他数据结构来映射步骤名称到函数
-        # 这里只是一个示例，实际实现需要根据具体情况来确定
-        return lambda **kwargs: {}  # 临时返回，实际实现需要根据具体情况来确定
+    # 这些是占位符函数，实际的执行逻辑在ResearchEngine中
+    async def _generate_search_queries_step(self, **kwargs): pass
+    async def _execute_search_step(self, **kwargs): pass
+    async def _analyze_search_results_step(self, **kwargs): pass
+    async def _supplementary_search_step(self, **kwargs): pass
+    async def _generate_final_answer_step(self, **kwargs): pass
+    async def _simple_search_step(self, **kwargs): pass
+    async def _generate_simple_answer_step(self, **kwargs): pass
+    
+    # 以后可以扩展用于其他任务类型
+    async def _search_technical_info_step(self, **kwargs): pass
+    async def _generate_code_step(self, **kwargs): pass
+    async def _search_data_sources_step(self, **kwargs): pass
+    async def _analyze_data_step(self, **kwargs): pass
+    
+    async def close(self):
+        """关闭客户端会话"""
+        await self.client.close()
 
 
 class DynamicWorkflowBuilder:
@@ -163,8 +229,8 @@ class DynamicWorkflowBuilder:
         self.model_name = model_name
         self.client = None
         
-        if Client:
-            self.client = Client(api_key=api_key)
+        if GeminiApiClient:
+            self.client = GeminiApiClient(api_key=api_key)
     
     async def analyze_task_and_build_workflow(self, user_query: str) -> DynamicWorkflow:
         """
@@ -210,13 +276,11 @@ class DynamicWorkflowBuilder:
             task_model = model_config.get_model_for_task("task_analysis")
             max_tokens = model_config.get_token_limits("task_analysis")
             
-            response = self.client.models.generate_content(
-                model=task_model,
-                contents=prompt_content,
-                config=GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=max_tokens,
-                )
+            response = self.client.generate_content(
+                model_name=task_model,
+                prompt=prompt_content,
+                temperature=0.1,
+                max_output_tokens=max_tokens,
             )
             
             print("API调用完成，解析响应...")
@@ -258,9 +322,12 @@ class DynamicWorkflowBuilder:
         steps_config = self._create_workflow_steps(analysis)
         
         workflow = DynamicWorkflow(
-            workflow_config=analysis,
-            steps_config=steps_config  # 保存步骤配置，而不是实例
+            workflow_id=f"wf_{int(time.time())}",
+            analysis=analysis
         )
+        
+        for step_config in steps_config:
+            workflow.add_step(step_config["name"], self._get_step_function(step_config["name"]), step_config["description"])
         
         return workflow
 
@@ -288,6 +355,14 @@ class DynamicWorkflowBuilder:
         
         return steps
     
+    def _get_step_function(self, step_name: str) -> Callable:
+        """获取步骤函数"""
+        # 实现步骤函数获取逻辑
+        # 这里需要根据步骤名称返回相应的函数
+        # 可以使用字典或其他数据结构来映射步骤名称到函数
+        # 这里只是一个示例，实际实现需要根据具体情况来确定
+        return lambda **kwargs: {}  # 临时返回，实际实现需要根据具体情况来确定
+
     def _build_research_workflow(self, workflow: DynamicWorkflow, user_query: str, analysis: Dict):
         """构建研究工作流"""
         workflow.add_step(WorkflowStep(
