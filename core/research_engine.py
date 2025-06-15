@@ -4,66 +4,39 @@
 """
 
 import asyncio
-import json
 import time
 import traceback
 from typing import Dict, List, Any, Optional, Callable
-from dataclasses import dataclass
 from datetime import datetime
 
-# 导入核心模块
-from .search_agent import SearchAgent
 from .workflow_builder import DynamicWorkflowBuilder, DynamicWorkflow, WorkflowStep
-from .state_manager import StateManager
-from .model_config import get_model_config, set_user_model
-from .api_client import APIClientFactory, BaseAPIClient
-from .api_config import APIConfig, APIMode, set_global_config
+from .search_agent import SearchAgent
+from .state_manager import StateManager, TaskStatus
+from .model_config import ModelConfiguration, get_model_config, set_user_model
+from utils.prompts import PromptTemplates
+from utils.helpers import extract_json_from_text
 from utils.debug_logger import get_debug_logger
 
 
 class ResearchEngine:
-    """深度研究引擎核心 - 支持双模式API"""
+    """深度研究引擎核心"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", api_mode: APIMode = APIMode.GENAI, **kwargs):
-        """初始化研究引擎"""
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
         self.api_key = api_key
-        self.model_name = model_name
-        self.api_mode = api_mode
         
-        # 创建API配置
-        if api_mode == APIMode.GENAI:
-            self.api_config = APIConfig.create_genai_config(api_key)
-        elif api_mode == APIMode.OPENAI:
-            base_url = kwargs.get('base_url', 'https://api.openai.com/v1')
-            timeout = kwargs.get('timeout', 30)
-            openai_key = kwargs.get('openai_api_key', api_key)
-            self.api_config = APIConfig.create_openai_config(openai_key, base_url, timeout)
-        else:
-            raise ValueError(f"不支持的API模式: {api_mode}")
-        
-        # 设置全局配置
-        set_global_config(self.api_config)
-        
-        # 设置用户选择的模型
+        # 设置用户选择的模型，但搜索功能将固定使用gemini-2.0-flash
         set_user_model(model_name)
         self.model_config = get_model_config()
         
-        print(f"🤖 研究引擎初始化:")
-        print(f"  用户选择模型: {model_name}")
-        print(f"  API模式: {api_mode.value}")
-        print(f"  搜索模型: {self.model_config.search_model}")
+        print(f"🤖 模型配置:")
+        print(f"  搜索模型: {self.model_config.search_model} (固定)")
         print(f"  任务分析模型: {self.model_config.task_analysis_model}")
         print(f"  反思模型: {self.model_config.reflection_model}")
         print(f"  答案生成模型: {self.model_config.answer_model}")
         
-        # 创建API客户端
-        self.search_client = self._create_client(self.model_config.search_model)
-        self.analysis_client = self._create_client(self.model_config.task_analysis_model)
-        self.answer_client = self._create_client(self.model_config.answer_model)
-        
-        # 初始化核心组件
-        self.search_agent = SearchAgent(self.search_client)
-        self.workflow_builder = DynamicWorkflowBuilder(self.analysis_client)
+        # 初始化核心组件，使用对应的模型
+        self.workflow_builder = DynamicWorkflowBuilder(api_key, self.model_config.task_analysis_model)
+        self.search_agent = SearchAgent(api_key, self.model_config.search_model)
         self.state_manager = StateManager()
         self.debug_logger = get_debug_logger()
         
@@ -75,39 +48,27 @@ class ResearchEngine:
         # 停止控制标记
         self._stop_research = False
     
-    def _create_client(self, model_name: str) -> BaseAPIClient:
-        """创建API客户端"""
-        if self.api_mode == APIMode.GENAI:
-            return APIClientFactory.create_client('genai', self.api_key, model_name)
-        elif self.api_mode == APIMode.OPENAI:
-            return APIClientFactory.create_client(
-                'openai', 
-                self.api_config.openai_config.api_key, 
-                model_name,
-                base_url=self.api_config.openai_config.base_url,
-                timeout=self.api_config.openai_config.timeout
-            )
-        else:
-            raise ValueError(f"不支持的API模式: {self.api_mode}")
-    
     def set_callbacks(self, progress_callback=None, step_callback=None, error_callback=None):
         """设置回调函数"""
-        self.progress_callback = progress_callback
-        self.step_callback = step_callback
-        self.error_callback = error_callback
+        if progress_callback:
+            self.progress_callback = progress_callback
+        if step_callback:
+            self.step_callback = step_callback
+        if error_callback:
+            self.error_callback = error_callback
     
     def set_progress_callback(self, callback: Callable):
-        """设置进度回调"""
+        """设置进度回调函数"""
         self.progress_callback = callback
-
+    
     def set_step_callback(self, callback: Callable):
-        """设置步骤回调"""
+        """设置步骤回调函数"""
         self.step_callback = callback
-
+    
     def set_error_callback(self, callback: Callable):
-        """设置错误回调"""
+        """设置错误回调函数"""
         self.error_callback = callback
-
+    
     def stop_research(self):
         """停止当前研究"""
         self._stop_research = True
@@ -1199,27 +1160,4 @@ Note: This information is gathered from web searches. Please verify for accuracy
     def clear_session(self):
         """清除会话数据"""
         self.state_manager.clear_session()
-        self.search_agent.clear_history()
-        
-    async def close_clients(self):
-        """关闭所有客户端连接"""
-        try:
-            if hasattr(self.search_agent.client, 'close'):
-                await self.search_agent.client.close()
-        except Exception as e:
-            print(f"关闭客户端时出错: {e}")
-    
-    @classmethod
-    def create_with_config(cls, api_key: str, **config) -> "ResearchEngine":
-        """使用配置创建研究引擎实例"""
-        model_name = config.get("model_name", "gemini-2.0-flash")
-        api_mode = config.get("api_mode", APIMode.GENAI)
-        engine = cls(api_key, model_name, api_mode)
-        
-        # 设置其他配置
-        if "max_search_rounds" in config:
-            engine._max_search_rounds = config["max_search_rounds"]
-        if "effort_level" in config:
-            engine._effort_level = config["effort_level"]
-        
-        return engine 
+        self.search_agent.clear_history() 
