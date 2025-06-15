@@ -238,13 +238,19 @@ def initialize_session_state():
         "research_error": None,
         "research_started": False,  # 添加执行标记
         "just_completed": False,    # 刚刚完成标记
-        "debug_enabled": False,     # debug模式开关
+        "debug_enabled": False,     # debug模式开关 - 默认关闭
         "show_markdown_preview": False  # markdown预览开关
     }
     
     for key, default_value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default_value
+
+    # 根据设置决定是否启用调试模式
+    if st.session_state.debug_enabled:
+        enable_debug("debug_logs")
+    else:
+        disable_debug()
 
     # 初始化LocalStorage数据加载
     initialize_from_localstorage()
@@ -725,7 +731,13 @@ def research_interface():
                         st.session_state.is_researching = False
                         st.session_state.research_complete = True
                         st.session_state.current_task = item["data"]
-                        st.session_state.research_results.append(item["data"])
+                        
+                        # 防重复添加：检查task_id是否已存在
+                        task_id = item["data"].get("task_id")
+                        existing_task_ids = [r.get("task_id") for r in st.session_state.research_results]
+                        if task_id not in existing_task_ids:
+                            st.session_state.research_results.append(item["data"])
+                        
                         st.session_state.just_completed = True
                         
                         # 保存到LocalStorage
