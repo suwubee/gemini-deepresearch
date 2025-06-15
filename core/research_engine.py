@@ -144,12 +144,11 @@ class ResearchEngine:
             if res.get("success"):
                 self.state_manager.add_search_result(q, res)
                 successful_searches += 1
-                # 统计搜索结果数量
-                if "search_results" in res:
-                    total_results += len(res.get("search_results", []))
+                # 统计grounding chunks数量
+                total_results += res.get("grounding_chunks", 0)
         
         # 详细输出搜索结果统计
-        self._notify_step(f"✅ 搜索完成: {successful_searches}/{len(queries)} 个查询成功，共获得 {total_results} 条结果")
+        self._notify_step(f"✅ 搜索完成: {successful_searches}/{len(queries)} 个查询成功，共获得 {total_results} 个信息块")
         
         return {**context, "search_results": results, "current_round": 1}
 
@@ -157,7 +156,12 @@ class ResearchEngine:
         prompt = PromptTemplates.reflection_prompt(context["user_query"], self.state_manager.get_search_content_list())
         model = self.model_config.get_model_for_task("reflection")
         try:
-            response = await self.search_agent.client.generate_content(model, prompt)
+            response = await self.search_agent.client.generate_content(
+                model_name=model,
+                prompt=prompt,
+                temperature=0.1,
+                max_output_tokens=2048
+            )
             reflection = extract_json_from_text(response["candidates"][0]["content"]["parts"][0]["text"])
             if not reflection: raise ValueError("Parsing reflection failed")
         except Exception as e:
@@ -202,7 +206,12 @@ class ResearchEngine:
         prompt = PromptTemplates.answer_synthesis_prompt(context["user_query"], all_content)
         model = self.model_config.get_model_for_task("answer")
         try:
-            response = await self.search_agent.client.generate_content(model, prompt)
+            response = await self.search_agent.client.generate_content(
+                model_name=model,
+                prompt=prompt,
+                temperature=0.1,
+                max_output_tokens=4096
+            )
             final_answer = response["candidates"][0]["content"]["parts"][0]["text"]
         except Exception as e:
             self._notify_step(f"AI合成失败: {e}")

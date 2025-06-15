@@ -259,10 +259,12 @@ class SearchAgent:
     async def generate_search_queries(self, user_query: str, num_queries: int = 3) -> List[str]:
         """生成搜索查询"""
         if not self._is_available():
+            print(f"[DEBUG] SearchAgent不可用，返回原查询: {user_query}")
             return [user_query]
 
         try:
             prompt = PromptTemplates.search_query_generation_prompt(user_query, num_queries)
+            print(f"[DEBUG] 生成查询提示词长度: {len(prompt)} 字符")
             
             response = await self.client.generate_content(
                 model_name=self.model_name,
@@ -272,17 +274,29 @@ class SearchAgent:
             )
 
             if "error" in response:
+                print(f"[DEBUG] API错误: {response['error']}")
                 raise Exception(f"API Error: {response['error'].get('message', 'Unknown error')}")
 
             response_text = self._get_text_from_response(response)
+            print(f"[DEBUG] API响应文本: {response_text[:200]}...")
+            
             if response_text:
                 result = extract_json_from_text(response_text)
+                print(f"[DEBUG] 解析的JSON结果: {result}")
+                
                 if result and "query" in result and isinstance(result["query"], list):
-                    return result["query"][:num_queries]
+                    queries = result["query"][:num_queries]
+                    print(f"[DEBUG] 成功生成 {len(queries)} 个查询: {queries}")
+                    return queries
+                else:
+                    print(f"[DEBUG] JSON解析失败或格式不正确，返回原查询")
+            else:
+                print(f"[DEBUG] 空响应，返回原查询")
             
             return [user_query]
             
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG] 查询生成异常: {e}")
             return [user_query]
     
     async def batch_search(self, queries: List[str]) -> List[Dict[str, Any]]:

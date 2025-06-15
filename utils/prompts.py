@@ -57,14 +57,14 @@ Task Types:
 Context: {user_query}"""
 
     @staticmethod
-    def search_query_generation_prompt(user_query: str, iteration: int = 1) -> str:
+    def search_query_generation_prompt(user_query: str, num_queries: int = 3) -> str:
         """Search query generation prompt"""
         current_date = get_current_date()
         
         query_writer_instructions = f"""Your goal is to generate sophisticated and diverse web search queries for comprehensive research on the given topic.
 
 Instructions:
-- Generate 3 diverse search queries that focus on different aspects of the topic
+- Generate {num_queries} diverse search queries that focus on different aspects of the topic
 - Each query should be specific and targeted
 - Queries should ensure current information is gathered. The current date is {current_date}
 - Use English for better search results
@@ -73,7 +73,7 @@ Instructions:
 Format: 
 - Format your response as a JSON object with these exact keys:
    - "rationale": Brief explanation of why these queries cover the topic comprehensively
-   - "query": A list of 3 search queries
+   - "query": A list of {num_queries} search queries
 
 Example:
 
