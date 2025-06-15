@@ -416,7 +416,6 @@ def setup_api_key():
                     st.sidebar.info("📁 日志将保存到 debug_logs/ 目录")
                 else:
                     disable_debug()
-                    st.sidebar.info("🐛 Debug模式已禁用")
             
             if debug_enabled:
                 debug_logger = get_debug_logger()
@@ -589,128 +588,179 @@ def run_research_in_background(
 
 
 def research_interface():
-    """研究主界面"""
-    st.title("🔍 DeepSearch - 智能深度研究助手")
-    st.markdown("### 智能深度研究助手")
+    """研究界面"""
+    st.markdown('<div class="main-header">🔍 DeepSearch</div>', unsafe_allow_html=True)
+    st.markdown("**智能深度研究助手** - 基于 Gemini 2.0 的多轮搜索分析系统")
     
-    # 初始化线程池执行器
-    if "executor" not in st.session_state:
-        st.session_state.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
-    # 查询输入
+    # 只有在配置了有效API密钥后才显示研究界面
+    if not st.session_state.api_key_validated:
+        st.info("👈 请先在左侧配置 Gemini API 密钥")
+        return
+    
+    # 研究查询输入
     user_query = st.text_area(
-        "请输入您的研究问题:",
+        "🎯 请描述您想要研究的问题:",
         height=100,
-        placeholder="例如: 分析2024年人工智能发展趋势...",
-        help="请描述您想要深入研究的问题或主题",
+        placeholder="例如: 分析2025年人工智能发展趋势和主要挑战",
         disabled=st.session_state.is_researching
     )
-    
-    # 研究参数设置
-    col1, col2 = st.columns(2)
-    with col1:
-        effort_level = st.selectbox(
-            "研究强度",
-            ["low", "medium", "high"],
-            index=1,
-            format_func=lambda x: {"low": "🟢 低强度", "medium": "🟡 中强度", "high": "🔴 高强度"}[x],
-            help="低强度: 3个初始查询×1轮, 中强度: 5个初始查询×3轮, 高强度: 7个初始查询×5轮",
-            disabled=st.session_state.is_researching
-        )
-    
+
+    # 高级设置
+    with st.expander("⚙️ 高级设置", expanded=False):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            effort_level = st.selectbox(
+                "研究强度",
+                options=["low", "medium", "high"],
+                index=1,
+                format_func=lambda x: {
+                    "low": "🔸 低强度 (3个初始查询×1轮搜索)",
+                    "medium": "🔶 中强度 (5个初始查询×3轮搜索)", 
+                    "high": "🔺 高强度 (7个初始查询×5轮搜索)"
+                }[x],
+                disabled=st.session_state.is_researching,
+                help="控制搜索的深度和广度"
+            )
+            
+            debug_enabled = st.checkbox(
+                "启用Debug模式", 
+                value=st.session_state.get("debug_enabled", False),
+                disabled=st.session_state.is_researching,
+                help="显示详细的执行日志和调试信息"
+            )
+            
+            # 更新debug设置
+            if debug_enabled != st.session_state.get("debug_enabled", False):
+                st.session_state.debug_enabled = debug_enabled
+                if debug_enabled:
+                    enable_debug("debug_logs")
+                else:
+                    disable_debug()
+        
+        with col2:
+            max_search_rounds = st.number_input(
+                "最大搜索轮数",
+                min_value=1,
+                max_value=10,
+                value=3,
+                disabled=st.session_state.is_researching,
+                help="设置搜索的最大轮数（会被强度级别覆盖，除非手动修改）"
+            )
+            
+            num_search_queries = st.number_input(
+                "每轮搜索查询数",
+                min_value=1,
+                max_value=15,
+                value=3,
+                disabled=st.session_state.is_researching,
+                help="每轮搜索生成的查询数量（会被强度级别覆盖，除非手动修改）"
+            )
+
+    # 检查是否已有相同查询正在进行或最近完成
+    def is_duplicate_query(query: str) -> tuple:
+        """检查是否为重复查询，返回 (is_duplicate, reason)"""
+        if not query or not query.strip():
+            return False, ""
+        
+        query_normalized = query.strip().lower()
+        
+        # 检查是否正在进行相同研究
+        if st.session_state.is_researching and st.session_state.current_task:
+            current_query = st.session_state.current_task.get("user_query", "").strip().lower()
+            if current_query == query_normalized:
+                return True, "相同的研究正在进行中"
+        
+        # 检查最近是否完成过相同研究（10分钟内）
+        from datetime import datetime, timedelta
+        current_time = datetime.now()
+        recent_threshold = current_time - timedelta(minutes=10)
+        
+        for result in st.session_state.research_results:
+            result_query = result.get("user_query", "").strip().lower()
+            if result_query == query_normalized:
+                # 检查任务时间
+                task_id = result.get("task_id", "")
+                if task_id.startswith("task_") and len(task_id) >= 20:
+                    try:
+                        timestamp_str = task_id[5:20]  # 提取 YYYYMMDD_HHMMSS 部分
+                        task_time = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                        if task_time > recent_threshold:
+                            time_diff = (current_time - task_time).total_seconds() / 60
+                            return True, f"相同研究在 {time_diff:.1f} 分钟前已完成"
+                    except:
+                        pass
+        
+        return False, ""
+
+    # 开始研究按钮
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        # 根据强度显示配置信息 - 与ResearchEngine保持一致
-        effort_configs = {
-            "low": {"rounds": 1, "initial_queries": 3, "time": "1-3分钟", "desc": "快速概览"},
-            "medium": {"rounds": 3, "initial_queries": 5, "time": "4-8分钟", "desc": "深度研究"},
-            "high": {"rounds": 5, "initial_queries": 7, "time": "8-15分钟", "desc": "全面分析"}
-        }
-        config = effort_configs[effort_level]
-        
-        st.info(f"""
-        📊 **{config['desc']}配置**
-        - 🔍 初始查询: {config['initial_queries']}个
-        - 🔄 最大轮数: {config['rounds']}轮
-        - ⏱️ 预计时间: {config['time']}
-        """)
-        
-        # 设置默认值，但允许用户在高级设置中覆盖
-        default_max_rounds = config['rounds']
-        max_search_rounds = default_max_rounds
-        num_search_queries = config['initial_queries']
-        
-        with st.expander("⚙️ 高级设置", expanded=False):
-            max_search_rounds = st.slider(
-                "自定义最大搜索轮数", 1, 10, default_max_rounds,
-                help="覆盖默认的搜索轮数设置",
-                disabled=st.session_state.is_researching
-            )
-            
-            num_search_queries = st.slider(
-                "自定义初始查询数量", 1, 15, config['initial_queries'],
-                help="覆盖默认的初始查询数量",
-                disabled=st.session_state.is_researching
-            )
-            
-            st.info(f"💡 **说明**: 低强度进行1轮搜索，中高强度会根据信息充足性进行多轮补充搜索")
-    
-    # 开始/停止研究按钮
-    if not st.session_state.is_researching:
-        if st.button("🚀 开始研究", type="primary", disabled=not user_query.strip()):
-            if not st.session_state.research_engine:
-                st.error("研究引擎未初始化，请检查API密钥配置")
-            else:
-                # 防止重复提交：检查是否已有任务在运行
-                if "current_task_future" in st.session_state and not st.session_state.current_task_future.done():
-                    st.warning("⚠️ 已有研究任务在运行中，请等待完成或先停止当前任务")
-                    return
-                
-                st.session_state.is_researching = True
-                st.session_state.research_complete = False
-                st.session_state.research_error = None
-                st.session_state.progress_messages = ["🚀 研究任务已启动..."]
-                st.session_state.current_step = "初始化..."
-                st.session_state.progress_percentage = 0
-                # 注意：不要清空research_results，保留历史记录
-                st.session_state.just_completed = False
-                st.session_state.research_started = True  # 添加启动标记
+        start_research = st.button(
+            "🚀 开始深度研究",
+            disabled=st.session_state.is_researching or not user_query,
+            type="primary",
+            use_container_width=True
+        )
 
-                q = queue.Queue()
-                stop_event = threading.Event()
-                st.session_state.queue = q
-                st.session_state.stop_event = stop_event
-
-                st.session_state.current_task_future = st.session_state.executor.submit(
-                    run_research_in_background,
-                    st.session_state.research_engine,
-                    user_query,
-                    max_search_rounds,
-                    effort_level,
-                    num_search_queries,
-                    q,
-                    stop_event,
-                )
+    # 停止研究按钮
+    if st.session_state.is_researching:
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("⏹️ 停止研究", type="secondary", use_container_width=True):
+                if st.session_state.research_engine:
+                    st.session_state.research_engine.stop_research()
+                st.session_state.is_researching = False
+                st.info("🛑 研究已停止")
                 st.rerun()
-    else:
-        if st.button("⏹️ 停止研究", type="secondary"):
-            if "stop_event" in st.session_state:
-                st.session_state.stop_event.set()
-            
-            # 立即重置研究状态，防止重复提交
-            st.session_state.is_researching = False
-            st.session_state.research_started = False
-            st.session_state.current_step = "已停止"
-            st.session_state.progress_messages.append("🛑 用户手动停止研究")
-            
-            # 等待后台任务完成
-            if "current_task_future" in st.session_state:
-                try:
-                    # 给后台任务一些时间来响应停止信号
-                    st.session_state.current_task_future.result(timeout=2)
-                except:
-                    pass  # 忽略超时或其他异常
-            
-            st.rerun()
+
+    # 处理研究启动
+    if start_research and user_query:
+        # 检查重复查询
+        is_duplicate, reason = is_duplicate_query(user_query)
+        if is_duplicate:
+            st.warning(f"⚠️ 重复研究检测: {reason}")
+            if st.button("🔄 仍要继续研究", key="force_research"):
+                pass  # 允许继续
+            else:
+                return  # 阻止研究
+        
+        if not st.session_state.research_engine:
+            st.error("❌ 研究引擎未初始化，请检查API密钥配置")
+            return
+
+        # 重置状态
+        st.session_state.progress_messages = []
+        st.session_state.research_error = None
+        st.session_state.research_complete = False
+        st.session_state.is_researching = True
+        st.session_state.research_started = True
+        st.session_state.just_completed = False
+        
+        # 创建队列和停止事件用于线程通信
+        import queue
+        import threading
+        
+        st.session_state.queue = queue.Queue()
+        st.session_state.stop_event = threading.Event()
+        
+                 # 在后台线程中启动研究
+         import concurrent.futures
+         with concurrent.futures.ThreadPoolExecutor() as executor:
+             future = executor.submit(
+                 run_research_in_background,
+                 st.session_state.research_engine,
+                 user_query,
+                 max_search_rounds,
+                 effort_level,
+                 num_search_queries,
+                 st.session_state.queue,
+                 st.session_state.stop_event
+             )
+             st.session_state.current_task_future = future
+        
+        # 立即刷新显示进度
+        st.rerun()
 
     # 研究进行中，处理队列更新
     if st.session_state.is_researching:
@@ -732,11 +782,24 @@ def research_interface():
                         st.session_state.research_complete = True
                         st.session_state.current_task = item["data"]
                         
-                        # 防重复添加：检查task_id是否已存在
+                        # 防重复添加：检查task_id和查询内容是否已存在
                         task_id = item["data"].get("task_id")
+                        user_query = item["data"].get("user_query", "").strip().lower()
+                        
+                        # 检查task_id重复
                         existing_task_ids = [r.get("task_id") for r in st.session_state.research_results]
-                        if task_id not in existing_task_ids:
+                        
+                        # 检查查询内容重复（更严格的检查）
+                        existing_queries = [r.get("user_query", "").strip().lower() for r in st.session_state.research_results]
+                        
+                        if task_id not in existing_task_ids and user_query not in existing_queries:
                             st.session_state.research_results.append(item["data"])
+                        else:
+                            # 如果检测到重复，记录日志但不添加
+                            if task_id in existing_task_ids:
+                                st.info(f"🔄 检测到重复的任务ID: {task_id}，已跳过")
+                            if user_query in existing_queries:
+                                st.info(f"🔄 检测到重复的查询内容，已跳过")
                         
                         st.session_state.just_completed = True
                         
@@ -825,6 +888,13 @@ def research_interface():
     # 如果有错误，显示错误信息
     if st.session_state.research_error and not st.session_state.is_researching:
         st.error(f"❌ 研究失败: {st.session_state.research_error}")
+    
+    # Debug相关显示
+    if st.session_state.get("debug_enabled", False):
+        with st.expander("🐛 Debug信息", expanded=False):
+            if st.button("📋 显示详细日志"):
+                st.session_state.show_debug_details = True
+                st.rerun()
     
     # 显示详细Debug日志
     if st.session_state.get("show_debug_details", False):
@@ -928,44 +998,48 @@ def research_interface():
                     st.info("暂无工作流步骤记录")
             
             with tab4:
-                st.markdown("### 错误日志")
-                errors = debug_logger.session_data.get("errors", [])
-                if errors:
-                    for i, error in enumerate(errors):
-                        with st.expander(f"错误 {i+1}: {error.get('error_type', 'unknown')}", expanded=False):
-                            st.text(f"时间: {error.get('timestamp', 'N/A')}")
-                            st.text(f"类型: {error.get('error_type', 'N/A')}")
-                            st.text(f"消息: {error.get('error_message', 'N/A')}")
+                st.markdown("### 错误日志详情")
+                error_logs = debug_logger.session_data.get("error_logs", [])
+                if error_logs:
+                    for i, error in enumerate(error_logs):
+                        error_type = error.get('error_type', 'unknown')
+                        error_message = error.get('error_message', 'N/A')
+                        
+                        with st.expander(f"错误 {i+1}: {error_type} - {error_message[:50]}...", expanded=False):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.text(f"时间: {error.get('timestamp', 'N/A')}")
+                                st.text(f"错误类型: {error_type}")
+                                st.text(f"上下文: {error.get('context', 'N/A')}")
+                            with col2:
+                                if error.get('metadata'):
+                                    st.text("元数据:")
+                                    st.json(error.get('metadata', {}))
                             
-                            if error.get('context'):
-                                st.text("上下文:")
-                                st.json(error.get('context', {}))
-                            
-                            if error.get('stacktrace'):
-                                st.text("堆栈跟踪:")
-                                st.code(error.get('stacktrace', ''), language='python')
+                            # 显示完整错误信息
+                            if st.checkbox(f"显示完整错误 - 错误{i+1}", key=f"show_full_error_{i}"):
+                                st.text_area("错误消息:", error_message, height=100, key=f"error_msg_{i}")
+                                if error.get('traceback'):
+                                    st.text_area("堆栈跟踪:", error.get('traceback', ''), height=200, key=f"traceback_{i}")
                 else:
                     st.info("暂无错误记录")
             
             with tab5:
-                st.markdown("### 会话信息")
-                session_info = debug_logger.session_data.get("session_info", {})
-                if session_info:
-                    st.json(session_info)
-                
-                st.markdown("### 研究结果")
+                st.markdown("### 会话信息详情")
                 research_results = debug_logger.session_data.get("research_results", [])
                 if research_results:
                     for i, result in enumerate(research_results):
-                        with st.expander(f"研究结果 {i+1}: {result.get('user_query', 'unknown')[:50]}...", expanded=False):
-                            st.text(f"时间: {result.get('timestamp', 'N/A')}")
-                            st.text(f"用户查询: {result.get('user_query', 'N/A')}")
-                            st.text(f"答案长度: {result.get('final_answer_length', 0)}")
-                            st.text(f"成功: {result.get('success', False)}")
-                            
-                            if result.get('metadata'):
-                                st.text("元数据:")
-                                st.json(result.get('metadata', {}))
+                        with st.expander(f"结果 {i+1}: {result.get('user_query', 'unknown')[:50]}...", expanded=False):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.text(f"时间: {result.get('timestamp', 'N/A')}")
+                                st.text(f"用户查询: {result.get('user_query', 'N/A')}")
+                                st.text(f"答案长度: {result.get('final_answer_length', 0)}")
+                                st.text(f"成功: {result.get('success', False)}")
+                            with col2:
+                                if result.get('metadata'):
+                                    st.text("元数据:")
+                                    st.json(result.get('metadata', {}))
                 else:
                     st.info("暂无研究结果记录")
         else:
